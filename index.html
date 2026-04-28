@@ -935,7 +935,6 @@ function titleAnim(){
 let lastT = 0;
 let acc = 0;
 const STEP = 1000/60;          // game updates at 60 Hz regardless of refresh rate
-let lastError = null;
 let errorCount = 0;
 
 function safeUpdate(){
@@ -944,7 +943,6 @@ function safeUpdate(){
     update();
   } catch(e){
     errorCount++;
-    lastError = e && e.message ? e.message : String(e);
     console.error("update error:", e);
     // If errors keep firing, drop to title rather than spinning forever.
     if(errorCount > 5){
@@ -957,12 +955,6 @@ function safeUpdate(){
 function safeRender(){
   try {
     render();
-    if(lastError){
-      // Show last error briefly so the user can see what happened.
-      g.fillStyle = "rgba(0,0,0,0.6)";
-      g.fillRect(0, H-22, W, 10);
-      drawText("ERR: " + String(lastError).slice(0, 30).toUpperCase(), 4, H-21, "#ff6666");
-    }
     ctx.drawImage(off, 0, 0, W*S, H*S);
   } catch(e){
     console.error("render error:", e);
@@ -995,24 +987,17 @@ function loop(now){
   requestAnimationFrame(loop);
 }
 
-// Global safety net: log uncaught errors but never let them kill the loop.
-addEventListener("error", e => {
-  lastError = e && e.message ? e.message : "unknown error";
-  console.error("window error:", e);
-});
-addEventListener("unhandledrejection", e => {
-  lastError = "promise: " + (e && e.reason ? e.reason : "unknown");
-  console.error("unhandled rejection:", e);
-});
+// Log uncaught errors to the console for debugging, but never surface them
+// to the player and never let them kill the loop.
+addEventListener("error", e => { console.error("window error:", e); });
+addEventListener("unhandledrejection", e => { console.error("unhandled rejection:", e); });
 
-// init — guard so a startup error still leaves a visible message.
 try {
   buildBunkers();
   buildFleet(1);
   state.mode = "title";
 } catch(e){
   console.error("init error:", e);
-  lastError = "init: " + (e && e.message ? e.message : String(e));
 }
 requestAnimationFrame(loop);
 
