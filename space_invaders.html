@@ -395,6 +395,82 @@ const ast = {
   hyperLatch: false,
 };
 
+// ---------- Pac-Man state ----------
+// 28x31 maze of 8px tiles; the canvas is 224x256 so the maze fits exactly with
+// an 8px score header at the top.
+const PAC_TILE = 8;
+const PAC_OFFSET_Y = 8;
+const PAC_COLS = 28;
+const PAC_ROWS = 31;
+// Maze characters:
+//   #  wall            .  dot              o  power pellet
+//   -  ghost-house door (passable for ghosts only, in eaten mode)
+//   space  empty corridor (no dot)
+//   P  Pac-Man spawn   1234  Blinky/Pinky/Inky/Clyde spawn
+const PAC_MAZE = [
+  "############################",
+  "#............##............#",
+  "#.####.#####.##.#####.####.#",
+  "#o####.#####.##.#####.####o#",
+  "#.####.#####.##.#####.####.#",
+  "#..........................#",
+  "#.####.##.########.##.####.#",
+  "#.####.##.########.##.####.#",
+  "#......##....##....##......#",
+  "######.##### ## #####.######",
+  "######.##### ## #####.######",
+  "######.##          ##.######",
+  "######.## ###--### ##.######",
+  "######.## #      # ##.######",
+  "      .   #  23  #   .      ",
+  "######.## #  4   # ##.######",
+  "######.## ######## ##.######",
+  "######.##          ##.######",
+  "######.## ######## ##.######",
+  "######.## ######## ##.######",
+  "#............##............#",
+  "#.####.#####.##.#####.####.#",
+  "#.####.#####.##.#####.####.#",
+  "#o..##.......P........##..o#",
+  "###.##.##.########.##.##.###",
+  "###.##.##.########.##.##.###",
+  "#......##....##....##......#",
+  "#.##########.##.##########.#",
+  "#.##########.##.##########.#",
+  "#..........................#",
+  "############################",
+];
+// Direction vectors in (dx, dy) tiles. Order: right, down, left, up.
+const PAC_DIRS = [{dx:1,dy:0},{dx:0,dy:1},{dx:-1,dy:0},{dx:0,dy:-1}];
+const pac = {
+  walls: [],         // boolean grid [r][c]
+  dots: [],          // 0=none, 1=dot, 2=power, 3=eaten
+  ghostHouseDoor: [],// boolean grid: tile is the gate
+  dotsTotal: 0,
+  dotsRemaining: 0,
+  dotsEaten: 0,
+  level: 1,
+  pacman: { x:0, y:0, dir:2, queuedDir:2, alive:true, deadT:0, mouth:0 },
+  ghosts: [],        // {name, color, x, y, dir, mode, scatter:{c,r}, home:{c,r}, exited, eatenScore}
+  modeIdx: 0,        // index into PAC_MODE_PLAN
+  modeT: 0,
+  globalMode: "scatter",
+  frightenedT: 0,
+  ghostsEatenInFrightened: 0,
+  fruit: null,       // {x,y,t,points,kind}
+  fruitTriggered: [false,false],
+  chompPhase: 0,
+  sirenPhase: 0,
+  startT: 0,         // brief "READY!" pause at level start
+};
+// Mode plan: pairs of [scatterFrames, chaseFrames]. After last entry, chase forever.
+const PAC_MODE_PLAN = [
+  [7*60, 20*60],
+  [7*60, 20*60],
+  [5*60, 20*60],
+  [5*60, Infinity],
+];
+
 // ---------- Bunkers ----------
 // Original bunker shape: 22 wide, 16 tall, with arched cutout at bottom.
 const BUNKER_SHAPE = [
@@ -782,9 +858,9 @@ function updateAsteroids(){
     if(p.life <= 0) ast.particles.splice(i,1);
   }
 
-  // ----- Win wave: all rocks cleared → back to invaders -----
+  // ----- Win wave: all rocks cleared → Pac-Man stage -----
   if(state.mode === "play" && ast.asteroids.length === 0){
-    transitionTo("invaders");
+    transitionTo("pacman");
   }
 }
 
@@ -869,6 +945,642 @@ function renderAsteroids(){
   g.restore();
 }
 
+// ---------- Pac-Man ----------
+// Coordinate conventions: an actor's (x,y) is its CENTER in pixel space.
+// Tile (c,r) covers pixels [c*TILE, (c+1)*TILE) × [r*TILE+OFFY, (r+1)*TILE+OFFY).
+// Tile center is ((c+0.5)*TILE, (r+0.5)*TILE+OFFY).
+function pacTileCenter(c, r){
+  return { x: c * PAC_TILE + PAC_TILE/2, y: r * PAC_TILE + PAC_TILE/2 + PAC_OFFSET_Y };
+}
+function pacPixelToTile(x, y){
+  return { c: Math.floor(x / PAC_TILE), r: Math.floor((y - PAC_OFFSET_Y) / PAC_TILE) };
+}
+function pacIsWall(c, r){
+  // Out-of-bounds rows are wall (no vertical wrap); columns wrap (tunnel).
+  if(r < 0 || r >= PAC_ROWS) return true;
+  // Wrap horizontally for the tunnel row only.
+  c = ((c % PAC_COLS) + PAC_COLS) % PAC_COLS;
+  return pac.walls[r][c];
+}
+function pacIsGate(c, r){
+  if(r < 0 || r >= PAC_ROWS) return false;
+  c = ((c % PAC_COLS) + PAC_COLS) % PAC_COLS;
+  return pac.ghostHouseDoor[r][c];
+}
+function pacOpposite(d){ return (d + 2) & 3; }
+
+function buildPacmanLevel(){
+  // Parse the maze source. Walls, dots, gate cells, and spawn points.
+  pac.walls = [];
+  pac.dots = [];
+  pac.ghostHouseDoor = [];
+  pac.dotsTotal = 0;
+  let pacSpawn = {c:13, r:23};
+  const ghostSpawns = {1:{c:13,r:11}, 2:{c:13,r:14}, 3:{c:11,r:14}, 4:{c:15,r:14}};
+  for(let r=0;r<PAC_ROWS;r++){
+    const wRow = [], dRow = [], gRow = [];
+    const src = PAC_MAZE[r] || "";
+    for(let c=0;c<PAC_COLS;c++){
+      const ch = src[c] || ' ';
+      let isW = false, dot = 0, gate = false;
+      if(ch === '#') isW = true;
+      else if(ch === '.') { dot = 1; pac.dotsTotal++; }
+      else if(ch === 'o') { dot = 2; pac.dotsTotal++; }
+      else if(ch === '-') gate = true;
+      else if(ch === 'P') pacSpawn = {c, r};
+      else if(ch === '1' || ch === '2' || ch === '3' || ch === '4') ghostSpawns[+ch] = {c, r};
+      wRow.push(isW); dRow.push(dot); gRow.push(gate);
+    }
+    pac.walls.push(wRow);
+    pac.dots.push(dRow);
+    pac.ghostHouseDoor.push(gRow);
+  }
+  pac.dotsRemaining = pac.dotsTotal;
+  pac.dotsEaten = 0;
+  pac.fruit = null;
+  pac.fruitTriggered = [false, false];
+  pac.modeIdx = 0;
+  pac.modeT = 0;
+  pac.globalMode = "scatter";
+  pac.frightenedT = 0;
+  pac.ghostsEatenInFrightened = 0;
+  pac.startT = 90;        // ~1.5s "READY!" pause
+  // Pac-Man spawns facing left, halfway between two tiles (classic).
+  const ps = pacTileCenter(pacSpawn.c, pacSpawn.r);
+  pac.pacman.x = ps.x;
+  pac.pacman.y = ps.y;
+  pac.pacman.dir = 2;
+  pac.pacman.queuedDir = 2;
+  pac.pacman.alive = true;
+  pac.pacman.deadT = 0;
+  pac.pacman.mouth = 0;
+  // Ghosts. Blinky starts outside the house facing left; the others wait inside.
+  pac.ghosts = [
+    makeGhost("blinky", "#ff0000", ghostSpawns[1], {c:25, r:0},  /*startInHouse*/ false, /*dotLimit*/ 0),
+    makeGhost("pinky",  "#ffb8de", ghostSpawns[2], {c:2,  r:0},  true,  0),
+    makeGhost("inky",   "#00ffff", ghostSpawns[3], {c:27, r:30}, true,  30),
+    makeGhost("clyde",  "#ffb852", ghostSpawns[4], {c:0,  r:30}, true,  60),
+  ];
+}
+
+function makeGhost(name, color, home, scatter, inHouse, dotLimit){
+  const c = pacTileCenter(home.c, home.r);
+  return {
+    name, color,
+    x: c.x, y: c.y,
+    dir: 2,                 // start moving left
+    mode: inHouse ? "house" : "scatter",
+    home, scatter,
+    inHouseT: 0,            // bobbing animation phase while in house
+    dotLimit,               // dots-eaten threshold to leave the house
+    eatenScore: 0,          // points awarded when eaten in frightened mode
+    eyesT: 0,               // counter for "eaten" mode return-to-house
+  };
+}
+
+// Try to advance an actor by 'speed' pixels. Snaps perpendicular axis to tile
+// center on a turn; clamps at the next wall in the direction of motion.
+function pacAdvance(a, speed, allowGate){
+  const cur = pacPixelToTile(a.x, a.y);
+  const ctr = pacTileCenter(cur.c, cur.r);
+  // Try queued turn (only if perpendicular and aligned on the perpendicular axis).
+  if(typeof a.queuedDir === "number" && a.queuedDir !== a.dir){
+    const qd = PAC_DIRS[a.queuedDir];
+    const cd = PAC_DIRS[a.dir];
+    const blocked = pacIsWall(cur.c + qd.dx, cur.r + qd.dy) && !(allowGate && pacIsGate(cur.c + qd.dx, cur.r + qd.dy));
+    if(!blocked){
+      if(qd.dx === -cd.dx && qd.dy === -cd.dy){
+        // 180-degree reversal — instantaneous.
+        a.dir = a.queuedDir;
+      } else if(qd.dx !== 0 && Math.abs(a.y - ctr.y) < 1){
+        a.y = ctr.y; a.dir = a.queuedDir;
+      } else if(qd.dy !== 0 && Math.abs(a.x - ctr.x) < 1){
+        a.x = ctr.x; a.dir = a.queuedDir;
+      }
+    }
+  }
+  const cd = PAC_DIRS[a.dir];
+  let nx = a.x + cd.dx * speed;
+  let ny = a.y + cd.dy * speed;
+  // Wall clamp: when moving into a wall tile beyond the current center.
+  const aheadC = cur.c + cd.dx, aheadR = cur.r + cd.dy;
+  const aheadBlocked = pacIsWall(aheadC, aheadR) && !(allowGate && pacIsGate(aheadC, aheadR));
+  if(aheadBlocked){
+    if(cd.dx === 1 && nx > ctr.x) nx = ctr.x;
+    else if(cd.dx === -1 && nx < ctr.x) nx = ctr.x;
+    else if(cd.dy === 1 && ny > ctr.y) ny = ctr.y;
+    else if(cd.dy === -1 && ny < ctr.y) ny = ctr.y;
+  }
+  // Tunnel wrap (horizontal). Only the open tunnel row has no walls at the
+  // edges so this is safe to apply unconditionally.
+  const fullW = PAC_COLS * PAC_TILE;
+  if(nx < -PAC_TILE/2) nx += fullW;
+  else if(nx >= fullW + PAC_TILE/2) nx -= fullW;
+  a.x = nx;
+  a.y = ny;
+}
+
+function pacGhostTarget(g){
+  // Returns target tile {c,r}.
+  if(g.mode === "frightened") return null;          // not used; random pick
+  if(g.mode === "eaten" || g.mode === "returning"){
+    return { c: 13, r: 11 };                          // ghost-house entrance
+  }
+  if(pac.globalMode === "scatter") return g.scatter;
+  // Chase mode — distinct AI per ghost (target tile of Pac-Man).
+  const p = pacPixelToTile(pac.pacman.x, pac.pacman.y);
+  const pdir = PAC_DIRS[pac.pacman.dir];
+  if(g.name === "blinky") return p;
+  if(g.name === "pinky"){
+    // 4 tiles ahead of Pac-Man (with the famous up-direction overflow bug:
+    // if Pac-Man is moving up, target is 4 up AND 4 left).
+    let tc = p.c + pdir.dx*4, tr = p.r + pdir.dy*4;
+    if(pac.pacman.dir === 3) tc -= 4;
+    return { c: tc, r: tr };
+  }
+  if(g.name === "inky"){
+    // Vector from Blinky through (2 tiles ahead of Pac-Man), doubled.
+    let pivotC = p.c + pdir.dx*2, pivotR = p.r + pdir.dy*2;
+    if(pac.pacman.dir === 3) pivotC -= 2;
+    const blinky = pac.ghosts.find(x => x.name === "blinky");
+    const b = pacPixelToTile(blinky.x, blinky.y);
+    return { c: pivotC*2 - b.c, r: pivotR*2 - b.r };
+  }
+  // clyde: Pac-Man if far (≥8 tiles), else his scatter corner.
+  const dx = p.c - pacPixelToTile(g.x, g.y).c;
+  const dy = p.r - pacPixelToTile(g.x, g.y).r;
+  if(dx*dx + dy*dy >= 64) return p;
+  return g.scatter;
+}
+
+function pacGhostDecide(g){
+  // Called when a ghost has just arrived at a tile center; choose its next
+  // direction based on the four neighbour tiles and the AI target.
+  const t = pacPixelToTile(g.x, g.y);
+  const reverse = pacOpposite(g.dir);
+  const allowGate = (g.mode === "eaten" || g.mode === "returning" || g.mode === "leaving");
+  // Frightened: pick a random non-reverse non-wall direction.
+  if(g.mode === "frightened"){
+    const opts = [];
+    for(let d=0; d<4; d++){
+      if(d === reverse) continue;
+      const dd = PAC_DIRS[d];
+      if(!pacIsWall(t.c + dd.dx, t.r + dd.dy) || (allowGate && pacIsGate(t.c+dd.dx, t.r+dd.dy))) opts.push(d);
+    }
+    if(opts.length){ g.dir = opts[Math.floor(Math.random()*opts.length)]; return; }
+    g.dir = reverse;
+    return;
+  }
+  const target = pacGhostTarget(g);
+  // Iterate in priority order up, left, down, right — strict less-than means
+  // ties go to the higher-priority direction (the classic tie-break rule).
+  const order = [3, 2, 1, 0];
+  let bestDir = -1, bestDist = Infinity;
+  for(const d of order){
+    if(d === reverse) continue;
+    const dd = PAC_DIRS[d];
+    const nc = t.c + dd.dx, nr = t.r + dd.dy;
+    if(pacIsWall(nc, nr) && !(allowGate && pacIsGate(nc, nr))) continue;
+    const dx = nc - target.c, dy = nr - target.r;
+    const dist = dx*dx + dy*dy;
+    if(dist < bestDist){ bestDist = dist; bestDir = d; }
+  }
+  if(bestDir === -1) bestDir = reverse;     // dead end
+  g.dir = bestDir;
+}
+
+function pacGhostSpeed(g){
+  // Per-mode speed in px/frame. The classic cabinet runs Pac-Man slightly
+  // faster than the ghosts so they're escapable; eaten ghosts rocket back.
+  if(g.mode === "eaten" || g.mode === "returning") return 2.0;
+  if(g.mode === "frightened") return 0.55;
+  if(g.mode === "house" || g.mode === "leaving") return 0.5;
+  // Speed up gradually with level (cap at +0.4).
+  return Math.min(0.85 + (pac.level-1) * 0.04, 1.05);
+}
+
+function pacmanSpeed(){
+  if(pac.frightenedT > 0) return 1.0;
+  return Math.min(0.9 + (pac.level-1) * 0.04, 1.1);
+}
+
+function pacFrightenedDuration(){
+  // Frightened time decreases with level (level 9+ = 0).
+  return Math.max(0, 6*60 - (pac.level-1)*45);
+}
+
+function pacUpdateGhostHouse(g){
+  // Bob in place, then leave when the dot threshold is hit.
+  if(g.mode !== "house") return;
+  g.inHouseT++;
+  // Vertical bob inside the house.
+  const center = pacTileCenter(g.home.c, g.home.r);
+  g.y = center.y + Math.sin(g.inHouseT * 0.1) * 2;
+  if(pac.dotsEaten >= g.dotLimit){
+    g.mode = "leaving";
+    // Move toward the gate column (13.5 tiles → x = 14*8 = 112)
+    g.dir = 3;
+  }
+}
+
+function pacUpdateGhost(g){
+  // House occupants just bob; "leaving" ghosts head for the gate; everyone
+  // else does standard tile-based AI movement.
+  if(g.mode === "house"){ pacUpdateGhostHouse(g); return; }
+  if(g.mode === "leaving"){
+    // Walk to (col 13.5 = x 112, row 11 = y above gate)
+    const gateY = pacTileCenter(13, 11).y;
+    const targetX = pacTileCenter(13, 14).x; // halfway between cols 13 and 14
+    const sp = pacGhostSpeed(g);
+    if(Math.abs(g.x - targetX) > sp){
+      g.x += Math.sign(targetX - g.x) * sp;
+    } else {
+      g.x = targetX;
+      if(g.y > gateY){
+        g.y -= sp;
+        if(g.y <= gateY){
+          g.y = gateY;
+          // Rejoin the active ghost flow at the gate, heading left.
+          g.mode = pac.globalMode === "scatter" ? "scatter" : "chase";
+          g.dir = 2;
+        }
+      }
+    }
+    return;
+  }
+  if(g.mode === "eaten"){
+    // Move quickly back to ghost house entrance, then descend to home.
+    const sp = pacGhostSpeed(g);
+    const t = pacPixelToTile(g.x, g.y);
+    const ctr = pacTileCenter(t.c, t.r);
+    const atCenter = Math.abs(g.x - ctr.x) < sp/2 && Math.abs(g.y - ctr.y) < sp/2;
+    if(atCenter){
+      g.x = ctr.x; g.y = ctr.y;
+      // If we're at the gate entrance, switch to "returning" (descending).
+      if(t.c === 13 && t.r === 11){
+        g.mode = "returning";
+        g.dir = 1;
+      } else {
+        pacGhostDecide(g);
+      }
+    }
+    pacAdvance(g, sp, true);
+    return;
+  }
+  if(g.mode === "returning"){
+    // Walk down into the home cell, then resume "leaving" so the ghost can come back out.
+    const homeCtr = pacTileCenter(g.home.c, g.home.r);
+    const sp = pacGhostSpeed(g);
+    if(Math.abs(g.x - homeCtr.x) > sp){ g.x += Math.sign(homeCtr.x - g.x) * sp; }
+    else { g.x = homeCtr.x; }
+    if(g.y < homeCtr.y){
+      g.y = Math.min(g.y + sp, homeCtr.y);
+    } else {
+      g.mode = "leaving";
+      g.dir = 3;
+    }
+    return;
+  }
+  // Normal AI tile-by-tile movement: pick next direction when crossing a center.
+  const sp = pacGhostSpeed(g);
+  const cur = pacPixelToTile(g.x, g.y);
+  const ctr = pacTileCenter(cur.c, cur.r);
+  const atCenter = Math.abs(g.x - ctr.x) < sp/2 && Math.abs(g.y - ctr.y) < sp/2;
+  if(atCenter){
+    g.x = ctr.x; g.y = ctr.y;
+    pacGhostDecide(g);
+  }
+  pacAdvance(g, sp, false);
+}
+
+// ----- Audio helpers (Pac-Man) -----
+function pacChomp(){
+  // Alternating two-tone "wakka" while moving and eating.
+  const f = (pac.chompPhase++ % 2 === 0) ? 540 : 380;
+  beep(f, 0.04, "square", 0.05);
+}
+function pacEatGhostSfx(n){
+  // Rising chime — pitch climbs with each ghost in the streak.
+  beep(440 + n*80, 0.15, "triangle", 0.08);
+  setTimeout(()=>beep(660 + n*80, 0.15, "triangle", 0.08), 80);
+}
+function pacDeathSfx(){
+  // Descending wail.
+  for(let i=0;i<8;i++) setTimeout(()=>beep(700 - i*70, 0.13, "sawtooth", 0.07), i*100);
+  noise(0.4, 0.07);
+}
+function pacFruitSfx(){
+  beep(1200, 0.07, "triangle", 0.07);
+  setTimeout(()=>beep(900, 0.1, "triangle", 0.07), 70);
+}
+function pacSiren(){
+  // Thin background tone whose pitch rises as more dots are eaten.
+  const ratio = pac.dotsEaten / Math.max(1, pac.dotsTotal);
+  const f = 95 + Math.floor(ratio * 60);
+  if(pac.frightenedT > 0){
+    if(pac.sirenPhase % 12 === 0) beep(160, 0.06, "square", 0.03);
+    if(pac.sirenPhase % 12 === 6) beep(220, 0.06, "square", 0.03);
+  } else if(pac.sirenPhase % 18 === 0){
+    beep(f, 0.07, "sawtooth", 0.025);
+  }
+}
+
+function pacKill(){
+  if(!pac.pacman.alive) return;
+  pac.pacman.alive = false;
+  pac.pacman.deadT = 90;
+  state.lives--;
+  state.mode = "dying";
+  pacDeathSfx();
+}
+
+function pacRespawn(){
+  // Place Pac-Man and ghosts back at their starts; brief "READY!" pause.
+  // Look up Pac-Man spawn from maze.
+  for(let r=0;r<PAC_ROWS;r++){
+    for(let c=0;c<PAC_COLS;c++){
+      if((PAC_MAZE[r]||"")[c] === 'P'){
+        const ps = pacTileCenter(c, r);
+        pac.pacman.x = ps.x; pac.pacman.y = ps.y;
+      }
+    }
+  }
+  pac.pacman.dir = 2; pac.pacman.queuedDir = 2;
+  pac.pacman.alive = true; pac.pacman.deadT = 0;
+  pac.frightenedT = 0;
+  pac.ghostsEatenInFrightened = 0;
+  // Reset ghosts.
+  for(const g of pac.ghosts){
+    const c = pacTileCenter(g.home.c, g.home.r);
+    g.x = c.x; g.y = c.y; g.dir = 2; g.inHouseT = 0;
+    g.mode = (g.name === "blinky") ? "scatter" : "house";
+  }
+  pac.startT = 60;
+  pac.modeIdx = 0; pac.modeT = 0; pac.globalMode = "scatter";
+}
+
+function updatePacman(){
+  // Pre-game pause: just hold "READY!" before letting the player move.
+  if(pac.startT > 0){
+    pac.startT--;
+    return;
+  }
+  pac.sirenPhase++;
+  pacSiren();
+
+  // Mode timer (scatter↔chase) — paused while frightened.
+  if(pac.frightenedT > 0){
+    pac.frightenedT--;
+    if(pac.frightenedT === 0){
+      // End frightened — restore each ghost's mode.
+      for(const g of pac.ghosts){
+        if(g.mode === "frightened") g.mode = pac.globalMode;
+      }
+      pac.ghostsEatenInFrightened = 0;
+    }
+  } else {
+    pac.modeT++;
+    const plan = PAC_MODE_PLAN[pac.modeIdx];
+    if(plan){
+      const [scatterLen, chaseLen] = plan;
+      if(pac.globalMode === "scatter" && pac.modeT >= scatterLen){
+        pac.globalMode = "chase";
+        pac.modeT = 0;
+        for(const g of pac.ghosts) if(g.mode === "scatter") g.mode = "chase";
+      } else if(pac.globalMode === "chase" && pac.modeT >= chaseLen){
+        pac.globalMode = "scatter";
+        pac.modeT = 0;
+        pac.modeIdx++;
+        for(const g of pac.ghosts) if(g.mode === "chase") g.mode = "scatter";
+      }
+    }
+  }
+
+  if(state.mode === "play" && pac.pacman.alive){
+    // Input: most-recent arrow wins.
+    if(keys["ArrowLeft"])  pac.pacman.queuedDir = 2;
+    if(keys["ArrowRight"]) pac.pacman.queuedDir = 0;
+    if(keys["ArrowUp"])    pac.pacman.queuedDir = 3;
+    if(keys["ArrowDown"])  pac.pacman.queuedDir = 1;
+    pacAdvance(pac.pacman, pacmanSpeed(), false);
+    // Mouth animates only while moving.
+    pac.pacman.mouth = (pac.pacman.mouth + 1) % 16;
+
+    // Eat dot/pellet at current tile.
+    const tt = pacPixelToTile(pac.pacman.x, pac.pacman.y);
+    if(tt.r >= 0 && tt.r < PAC_ROWS && tt.c >= 0 && tt.c < PAC_COLS){
+      const dot = pac.dots[tt.r][tt.c];
+      if(dot === 1){
+        pac.dots[tt.r][tt.c] = 0;
+        pac.dotsRemaining--; pac.dotsEaten++;
+        state.score += 10;
+        if(pac.chompPhase % 4 === 0) pacChomp();
+        else pac.chompPhase++;
+      } else if(dot === 2){
+        pac.dots[tt.r][tt.c] = 0;
+        pac.dotsRemaining--; pac.dotsEaten++;
+        state.score += 50;
+        pac.frightenedT = pacFrightenedDuration();
+        pac.ghostsEatenInFrightened = 0;
+        for(const g of pac.ghosts){
+          if(g.mode === "scatter" || g.mode === "chase"){
+            g.mode = "frightened";
+            g.dir = pacOpposite(g.dir);          // ghosts reverse on power pellet
+          }
+        }
+        beep(80, 0.4, "sawtooth", 0.06);
+      }
+      // Fruit triggers at 70 and 170 dots eaten.
+      if(!pac.fruitTriggered[0] && pac.dotsEaten >= 70){
+        pac.fruitTriggered[0] = true;
+        const f = pacTileCenter(13, 17);
+        pac.fruit = { x: f.x, y: f.y, t: 600, points: 100 + (pac.level-1)*100, kind: pac.level };
+      }
+      if(!pac.fruitTriggered[1] && pac.dotsEaten >= 170){
+        pac.fruitTriggered[1] = true;
+        const f = pacTileCenter(13, 17);
+        pac.fruit = { x: f.x, y: f.y, t: 600, points: 200 + (pac.level-1)*100, kind: pac.level };
+      }
+    }
+  }
+
+  // Ghosts.
+  for(const g of pac.ghosts){
+    pacUpdateGhost(g);
+  }
+
+  // Fruit lifetime / pickup.
+  if(pac.fruit){
+    pac.fruit.t--;
+    if(pac.fruit.t <= 0) pac.fruit = null;
+    else if(Math.hypot(pac.fruit.x - pac.pacman.x, pac.fruit.y - pac.pacman.y) < 6 && pac.pacman.alive){
+      state.score += pac.fruit.points;
+      pac.fruit = null;
+      pacFruitSfx();
+    }
+  }
+
+  // Ghost vs Pac-Man collisions.
+  if(pac.pacman.alive && state.mode === "play"){
+    for(const g of pac.ghosts){
+      if(g.mode === "eaten" || g.mode === "returning" || g.mode === "house" || g.mode === "leaving") continue;
+      if(Math.hypot(g.x - pac.pacman.x, g.y - pac.pacman.y) < 6){
+        if(g.mode === "frightened"){
+          pac.ghostsEatenInFrightened++;
+          const pts = 200 * Math.pow(2, pac.ghostsEatenInFrightened - 1); // 200, 400, 800, 1600
+          state.score += pts;
+          g.eatenScore = pts;
+          g.mode = "eaten";
+          pacEatGhostSfx(pac.ghostsEatenInFrightened);
+        } else {
+          pacKill();
+          break;
+        }
+      }
+    }
+  }
+
+  // Dying animation handled in shared death code below.
+  if(state.mode === "dying"){
+    pac.pacman.deadT--;
+    pac.pacman.mouth = Math.max(0, 12 - Math.floor((90 - pac.pacman.deadT) / 7));
+    if(pac.pacman.deadT <= 0){
+      if(state.lives <= 0){
+        saveHi();
+        state.mode = "gameover";
+        state.gameoverT = 0;
+        state.restartArmed = false;
+      } else {
+        pacRespawn();
+        state.mode = "play";
+      }
+    }
+  }
+
+  // Win: all dots gone → harder Invaders wave.
+  if(state.mode === "play" && pac.dotsRemaining === 0){
+    transitionTo("invaders");
+  }
+}
+
+function renderPacman(){
+  // Walls
+  g.save();
+  g.strokeStyle = "#2121ff";
+  g.lineWidth = 1;
+  // Draw walls as filled blue blocks with a slightly inset inner stripe — simple
+  // and reads as "Pac-Man maze" without per-edge complexity.
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = "#1414c8";
+  for(let r=0;r<PAC_ROWS;r++){
+    for(let c=0;c<PAC_COLS;c++){
+      if(pac.walls[r][c]){
+        const px = c*PAC_TILE, py = r*PAC_TILE + PAC_OFFSET_Y;
+        g.fillRect(px+1, py+1, PAC_TILE-2, PAC_TILE-2);
+      }
+    }
+  }
+  // Ghost-house door (pink line)
+  g.fillStyle = "#ffb8de";
+  for(let r=0;r<PAC_ROWS;r++){
+    for(let c=0;c<PAC_COLS;c++){
+      if(pac.ghostHouseDoor[r][c]){
+        const py = r*PAC_TILE + PAC_OFFSET_Y;
+        g.fillRect(c*PAC_TILE, py + 3, PAC_TILE, 2);
+      }
+    }
+  }
+  // Dots & power pellets
+  for(let r=0;r<PAC_ROWS;r++){
+    for(let c=0;c<PAC_COLS;c++){
+      const d = pac.dots[r][c];
+      if(d === 1){
+        g.fillStyle = "#ffe0b0";
+        g.fillRect(c*PAC_TILE + 3, r*PAC_TILE + PAC_OFFSET_Y + 3, 2, 2);
+      } else if(d === 2){
+        // Blink power pellets.
+        if(Math.floor(frame/15)%2 === 0){
+          g.fillStyle = "#ffe0b0";
+          g.beginPath();
+          g.arc(c*PAC_TILE + 4, r*PAC_TILE + PAC_OFFSET_Y + 4, 3, 0, Math.PI*2);
+          g.fill();
+        }
+      }
+    }
+  }
+  // Fruit
+  if(pac.fruit){
+    g.fillStyle = "#ff4040";
+    g.beginPath();
+    g.arc(pac.fruit.x, pac.fruit.y, 3, 0, Math.PI*2);
+    g.fill();
+    g.fillStyle = "#40ff40";
+    g.fillRect(pac.fruit.x - 1, pac.fruit.y - 5, 2, 2);
+  }
+  // Pac-Man — wedge whose mouth opens/closes.
+  const p = pac.pacman;
+  if(state.mode !== "dying" || pac.pacman.deadT > 0){
+    g.save();
+    g.translate(p.x, p.y);
+    const dirAngle = [0, Math.PI/2, Math.PI, -Math.PI/2][p.dir];
+    g.rotate(dirAngle);
+    let openT = state.mode === "dying" ? p.mouth/12 : Math.abs(Math.sin(p.mouth*0.4)) * 0.6;
+    if(state.mode === "dying") openT = Math.min(1, (90 - p.deadT)/90);
+    g.fillStyle = "#ffea00";
+    g.beginPath();
+    const a = Math.PI * openT * 0.6 + 0.05;
+    g.moveTo(0,0);
+    g.arc(0, 0, 4, a, Math.PI*2 - a);
+    g.closePath();
+    g.fill();
+    g.restore();
+  }
+  // Ghosts
+  for(const gh of pac.ghosts){
+    let color = gh.color;
+    if(gh.mode === "frightened"){
+      // Flash white→blue in last ~2s.
+      color = (pac.frightenedT < 120 && Math.floor(pac.frightenedT/8)%2===0) ? "#ffffff" : "#2424ff";
+    }
+    if(gh.mode === "eaten" || gh.mode === "returning"){
+      // Just eyes.
+      g.fillStyle = "#ffffff";
+      g.fillRect(gh.x - 3, gh.y - 2, 2, 2);
+      g.fillRect(gh.x + 1, gh.y - 2, 2, 2);
+      g.fillStyle = "#3030ff";
+      const dd = PAC_DIRS[gh.dir];
+      g.fillRect(gh.x - 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
+      g.fillRect(gh.x + 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
+      continue;
+    }
+    g.fillStyle = color;
+    // Body: 7×7 block with a wavy bottom.
+    g.fillRect(gh.x - 4, gh.y - 4, 8, 8);
+    // Eyes
+    g.fillStyle = "#ffffff";
+    g.fillRect(gh.x - 3, gh.y - 2, 2, 2);
+    g.fillRect(gh.x + 1, gh.y - 2, 2, 2);
+    g.fillStyle = "#0000ff";
+    const dd = PAC_DIRS[gh.dir];
+    g.fillRect(gh.x - 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
+    g.fillRect(gh.x + 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
+    // Frightened ghosts get a worried mouth.
+    if(gh.mode === "frightened"){
+      g.fillStyle = "#ffffff";
+      g.fillRect(gh.x - 3, gh.y + 1, 1, 1);
+      g.fillRect(gh.x - 1, gh.y + 1, 1, 1);
+      g.fillRect(gh.x + 1, gh.y + 1, 1, 1);
+      g.fillRect(gh.x + 3, gh.y + 1, 1, 1);
+    }
+  }
+  // "READY!" prompt at level start.
+  if(pac.startT > 0){
+    drawText("READY!", W/2 - 18, pacTileCenter(13, 17).y - 4, "#ffe000");
+  }
+  g.restore();
+}
+
 // ---------- Inter-game transitions ----------
 function transitionTo(target){
   state.mode = "transition";
@@ -876,6 +1588,8 @@ function transitionTo(target){
   state.transitionTo = target;
   if(target === "asteroids"){
     state.transitionLabel = "STAGE " + state.level + "  ASTEROIDS";
+  } else if(target === "pacman"){
+    state.transitionLabel = "STAGE " + state.level + "  PAC-MAN";
   } else {
     // Returning to invaders bumps the round counter.
     state.transitionLabel = "WAVE " + (state.level + 1) + "  INVADERS";
@@ -894,6 +1608,10 @@ function finishTransition(){
   if(state.transitionTo === "asteroids"){
     state.gameType = "asteroids";
     buildAsteroidsLevel();
+    state.mode = "play";
+  } else if(state.transitionTo === "pacman"){
+    state.gameType = "pacman";
+    buildPacmanLevel();
     state.mode = "play";
   } else {
     state.gameType = "invaders";
@@ -933,6 +1651,11 @@ function startGame(){
   ast.bullets = [];
   ast.particles = [];
   ast.ufo = null;
+  // And pacman state.
+  pac.dotsRemaining = 0;
+  pac.dotsEaten = 0;
+  pac.fruit = null;
+  pac.frightenedT = 0;
   buildBunkers();
   buildFleet(state.level);
 }
@@ -1015,6 +1738,11 @@ function update(){
         }
       }
     }
+    return;
+  }
+
+  if(state.gameType === "pacman"){
+    updatePacman();
     return;
   }
 
@@ -1481,34 +2209,38 @@ function render(){
       // Ground line (green)
       g.fillStyle = C_GREEN;
       g.fillRect(0, H-12, W, 1);
-    } else {
-      // Asteroids
+    } else if(state.gameType === "asteroids"){
       renderAsteroids();
+    } else if(state.gameType === "pacman"){
+      renderPacman();
     }
 
-    // Lives display (shared HUD) — uses a small ship glyph per remaining life.
-    drawText(String(Math.max(0,state.lives)), 8, H-9, C_WHITE);
-    for(let i=0;i<Math.max(0,state.lives);i++){
-      if(state.gameType === "invaders"){
-        drawSprite(sprites.player, 24 + i*16, H-10);
-      } else {
-        // Tiny vector ship icon for the asteroids stage.
-        g.save();
-        g.strokeStyle = C_WHITE;
-        g.lineWidth = 1;
-        g.translate(24 + i*12, H-7);
-        g.rotate(-Math.PI/2);
-        g.beginPath();
-        g.moveTo(4, 0);
-        g.lineTo(-3, 3);
-        g.lineTo(-1, 0);
-        g.lineTo(-3, -3);
-        g.closePath();
-        g.stroke();
-        g.restore();
+    // Lives display (shared HUD) — Pac-Man hides this since the maze fills
+    // the bottom of the screen; the others show a tiny per-game life glyph.
+    if(state.gameType !== "pacman"){
+      drawText(String(Math.max(0,state.lives)), 8, H-9, C_WHITE);
+      for(let i=0;i<Math.max(0,state.lives);i++){
+        if(state.gameType === "invaders"){
+          drawSprite(sprites.player, 24 + i*16, H-10);
+        } else {
+          // Tiny vector ship icon for the asteroids stage.
+          g.save();
+          g.strokeStyle = C_WHITE;
+          g.lineWidth = 1;
+          g.translate(24 + i*12, H-7);
+          g.rotate(-Math.PI/2);
+          g.beginPath();
+          g.moveTo(4, 0);
+          g.lineTo(-3, 3);
+          g.lineTo(-1, 0);
+          g.lineTo(-3, -3);
+          g.closePath();
+          g.stroke();
+          g.restore();
+        }
       }
+      drawText("CREDIT 01", W-60, H-9, C_WHITE);
     }
-    drawText("CREDIT 01", W-60, H-9, C_WHITE);
 
     if(state.mode === "gameover"){
       drawText("GAME OVER", W/2 - 27, H/2 - 8, C_RED);
