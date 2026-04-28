@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SPACE INVADERS</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:"Courier New",monospace;overflow:hidden;}
+  #wrap{display:flex;align-items:center;justify-content:center;height:100%;}
+  canvas{background:#000;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 30px #111;border:2px solid #222;}
+  #help{position:fixed;left:8px;bottom:6px;color:#666;font-size:12px;letter-spacing:1px;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="448" height="512"></canvas></div>
+<div id="help">&larr; &rarr; MOVE &nbsp; SPACE FIRE &nbsp; ENTER START</div>
+<script>
+(() => {
+"use strict";
+
+// ---------- Canvas ----------
+const cv = document.getElementById("game");
+const ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+// Logical resolution emulates the original 224x256, scaled x2 -> 448x512
+const W = 224, H = 256, S = 2;
+const off = document.createElement("canvas");
+off.width = W; off.height = H;
+const g = off.getContext("2d");
+g.imageSmoothingEnabled = false;
+
+// ---------- Sprites (1 = pixel on) ----------
+// Original Space Invaders sprites, two animation frames each.
+const SPR = {
+  // Squid (top row) - 8 wide
+  squid: [
+    [
+      "...××...",
+      "..××××..",
+      ".××××××.",
+      "××.××.××",
+      "××××××××",
+      "..×..×..",
+      ".×.××.×.",
+      "×.×..×.×",
+    ],
+    [
+      "...××...",
+      "..××××..",
+      ".××××××.",
+      "××.××.××",
+      "××××××××",
+      ".×.××.×.",
+      "×.×..×.×",
+      ".×.··.×.",
+    ],
+  ],
+  // Crab (middle rows) - 11 wide
+  crab: [
+    [
+      ".×.....×.",
+      "..×...×..",
+      ".×××××××.",
+      "××.×××.××",
+      "×××××××××",
+      "×.×××××.×",
+      "×.×...×.×",
+      "..××.××..",
+    ],
+    [
+      ".×.....×.",
+      "×.×...×.×",
+      "×.×××××.×",
+      "×××.×.×××",
+      "×××××××××",
+      ".×××××××.",
+      "..×...×..",
+      ".×.....×.",
+    ],
+  ],
+  // Octopus (bottom rows) - 12 wide
+  octopus: [
+    [
+      "...××××....",
+      ".××××××××..",
+      "××××××××××.",
+      "×××..××..××",
+      "×××××××××××",
+      "..×××..×××.",
+      ".××.××××.××",
+      "×.×......×.",
+    ],
+    [
+      "...××××....",
+      ".××××××××..",
+      "××××××××××.",
+      "×××..××..××",
+      "×××××××××××",
+      ".××.××××.××",
+      "××........×",
+      ".×.......×.",
+    ],
+  ],
+  // Player ship (13 wide)
+  player: [
+    "......×......",
+    ".....×××.....",
+    ".....×××.....",
+    ".×××××××××××.",
+    "×××××××××××××",
+    "×××××××××××××",
+    "×××××××××××××",
+  ],
+  // UFO (16 wide)
+  ufo: [
+    "....××××××....",
+    "..××××××××××..",
+    ".××××××××××××.",
+    "××.××.××.××.××",
+    "××××××××××××××",
+    ".××.××××.××.××",
+    "..×.......×...",
+  ],
+  // Player explosion (frame 1 + 2)
+  pexplode1: [
+    "...×.....×....",
+    "....×...×.....",
+    "..×.×.×.×..×..",
+    "...××××××.....",
+    ".×××××××××××..",
+    "××.××××××.×××.",
+    "××××××××××××××",
+  ],
+  pexplode2: [
+    "..×....×.....×",
+    "×..×.×....×.×.",
+    "..×....××.....",
+    ".×.×××××××.×..",
+    "..××××××××××..",
+    ".××××××××××..×",
+    "××.××××××××.××",
+  ],
+  // Enemy explosion (13x8)
+  ex: [
+    "..×..×..×..",
+    "×..×..×...×",
+    ".×..××..×..",
+    "..××××××...",
+    ".×××××××.×.",
+    "..××××××..×",
+    "×.×.×..×.×.",
+    "..×..×..×..",
+  ],
+};
+
+// Pre-render sprite bitmaps to small canvases
+function makeSprite(rows, color){
+  const w = rows[0].length, h = rows.length;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const x = c.getContext("2d");
+  const img = x.createImageData(w,h);
+  // parse color hex
+  const r = parseInt(color.slice(1,3),16), gg = parseInt(color.slice(3,5),16), b = parseInt(color.slice(5,7),16);
+  for(let yy=0; yy<h; yy++){
+    const row = rows[yy];
+    for(let xx=0; xx<w; xx++){
+      const ch = row[xx];
+      const i = (yy*w+xx)*4;
+      if(ch === '×' || ch === '*'){ // both fillers acceptable
+        img.data[i]=r; img.data[i+1]=gg; img.data[i+2]=b; img.data[i+3]=255;
+      }
+    }
+  }
+  x.putImageData(img,0,0);
+  return c;
+}
+
+// Color scheme — original cabinet used a clear color overlay:
+// red strip at top (UFO + score), white middle, green strip at bottom (player & ground line)
+const C_WHITE = "#ffffff";
+const C_GREEN = "#22ff22";
+const C_RED   = "#ff2222";
+
+const sprites = {
+  squid:    [makeSprite(SPR.squid[0],   C_WHITE), makeSprite(SPR.squid[1],   C_WHITE)],
+  crab:     [makeSprite(SPR.crab[0],    C_WHITE), makeSprite(SPR.crab[1],    C_WHITE)],
+  octopus:  [makeSprite(SPR.octopus[0], C_WHITE), makeSprite(SPR.octopus[1], C_WHITE)],
+  player:   makeSprite(SPR.player,     C_GREEN),
+  ufo:      makeSprite(SPR.ufo,        C_RED),
+  pex1:     makeSprite(SPR.pexplode1,  C_GREEN),
+  pex2:     makeSprite(SPR.pexplode2,  C_GREEN),
+  ex_w:     makeSprite(SPR.ex,         C_WHITE),
+  ex_g:     makeSprite(SPR.ex,         C_GREEN),
+  ex_r:     makeSprite(SPR.ex,         C_RED),
+};
+
+// ---------- Audio (WebAudio synthesised, no assets) ----------
+let actx = null;
+function audio(){
+  if(!actx) actx = new (window.AudioContext||window.webkitAudioContext)();
+  return actx;
+}
+function beep(freq, dur, type="square", vol=0.08){
+  try{
+    const a = audio();
+    const o = a.createOscillator();
+    const gn = a.createGain();
+    o.type = type; o.frequency.value = freq;
+    gn.gain.value = vol;
+    o.connect(gn).connect(a.destination);
+    o.start();
+    gn.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + dur);
+    o.stop(a.currentTime + dur);
+  }catch(e){}
+}
+function noise(dur, vol=0.1){
+  try{
+    const a = audio();
+    const buf = a.createBuffer(1, a.sampleRate*dur, a.sampleRate);
+    const ch = buf.getChannelData(0);
+    for(let i=0;i<ch.length;i++) ch[i] = (Math.random()*2-1) * (1 - i/ch.length);
+    const src = a.createBufferSource(); src.buffer = buf;
+    const gn = a.createGain(); gn.gain.value = vol;
+    src.connect(gn).connect(a.destination);
+    src.start();
+  }catch(e){}
+}
+// The famous descending 4-note marching loop
+const MARCH = [110, 98, 87, 82];
+let marchIdx = 0;
+function marchStep(){ beep(MARCH[marchIdx % 4], 0.08, "square", 0.06); marchIdx++; }
+
+// ---------- Input ----------
+const keys = {};
+addEventListener("keydown", e => {
+  keys[e.code] = true;
+  if(["Space","ArrowLeft","ArrowRight","Enter"].includes(e.code)) e.preventDefault();
+  if(state.mode === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
+  else if(state.mode === "gameover" && e.code === "Enter") startGame();
+});
+addEventListener("keyup",   e => { keys[e.code] = false; });
+
+// ---------- Game state ----------
+const state = {
+  mode: "title",       // title | play | dying | gameover
+  score: 0,
+  hi: parseInt(localStorage.getItem("si_hi")||"0",10),
+  lives: 3,
+  level: 1,
+  player: { x: 20, y: H-24, w: 13, h: 7, alive:true, deadT: 0, anim:0 },
+  bullet: null,        // {x,y}
+  enemies: [],         // {x,y,type,alive,row,col}
+  enemyDir: 1,
+  enemyStep: 0,        // counter to schedule moves
+  enemyMoveEvery: 48,  // frames between full-fleet step (will shrink as fewer remain)
+  enemyAnim: 0,
+  enemyBullets: [],    // {x,y,kind,frame}
+  enemyShootCD: 60,
+  bunkers: [],         // grid of pixels
+  ufo: null,           // {x,dir,points}
+  ufoCD: 1500,
+  explosions: [],      // {x,y,t,sprite}
+  bottomReached: false,
+  flash: 0,
+};
+
+// ---------- Bunkers ----------
+// Original bunker shape: 22 wide, 16 tall, with arched cutout at bottom.
+const BUNKER_SHAPE = [
+  "...××××××××××××××××...",
+  "..××××××××××××××××××..",
+  ".××××××××××××××××××××.",
+  "××××××××××××××××××××××",
+  "××××××××××××××××××××××",
+  "××××××××××××××××××××××",
+  "××××××××××××××××××××××",
+  "××××××××××××××××××××××",
+  "××××××××××××××××××××××",
+  "×××××××.......××××××××",
+  "××××××.........×××××××",
+  "×××××...........××××××",
+  "×××××...........××××××",
+  "×××××...........××××××",
+  "×××××...........××××××",
+  "×××××...........××××××",
+];
+function buildBunkers(){
+  state.bunkers = [];
+  const w = BUNKER_SHAPE[0].length, h = BUNKER_SHAPE.length;
+  // 4 bunkers, evenly spaced
+  for(let b=0;b<4;b++){
+    const bx = 32 + b * 45;
+    const by = H - 56;
+    const grid = [];
+    for(let y=0;y<h;y++){
+      const row = [];
+      for(let x=0;x<w;x++) row.push(BUNKER_SHAPE[y][x] === '×' ? 1 : 0);
+      grid.push(row);
+    }
+    state.bunkers.push({x:bx, y:by, w, h, grid});
+  }
+}
+
+// ---------- Enemy fleet ----------
+function buildFleet(level){
+  state.enemies = [];
+  // 11 cols x 5 rows (top: squid, mid 2: crab, bot 2: octopus)
+  const startY = 40 + Math.min(level-1,5) * 8; // start lower as level rises
+  for(let r=0;r<5;r++){
+    for(let c=0;c<11;c++){
+      let type, w;
+      if(r===0){ type="squid"; w=8; }
+      else if(r<=2){ type="crab"; w=11; }
+      else { type="octopus"; w=12; }
+      // Each cell is 16 wide; sprites centered in cell
+      const cellW = 16, cellH = 16;
+      const x = 24 + c*cellW + Math.floor((cellW-w)/2);
+      const y = startY + r*cellH;
+      state.enemies.push({x,y,type,w,h:8,alive:true,row:r,col:c});
+    }
+  }
+  state.enemyDir = 1;
+  state.enemyStep = 0;
+  recomputeEnemySpeed();
+}
+function aliveCount(){ let n=0; for(const e of state.enemies) if(e.alive) n++; return n; }
+function recomputeEnemySpeed(){
+  // Original: speeds up dramatically as fleet thins. 55 -> slow, 1 -> very fast.
+  const n = aliveCount();
+  state.enemyMoveEvery = Math.max(3, Math.floor(2 + n*0.85));
+}
+
+// ---------- Game flow ----------
+function startGame(){
+  state.mode = "play";
+  state.score = 0;
+  state.lives = 3;
+  state.level = 1;
+  state.player.x = 20;
+  state.player.alive = true;
+  state.player.deadT = 0;
+  state.bullet = null;
+  state.enemyBullets = [];
+  state.explosions = [];
+  state.ufo = null;
+  state.ufoCD = 1500;
+  state.bottomReached = false;
+  buildBunkers();
+  buildFleet(state.level);
+}
+
+function nextWave(){
+  state.level++;
+  state.bullet = null;
+  state.enemyBullets = [];
+  state.ufo = null;
+  state.ufoCD = 1500;
+  buildBunkers();
+  buildFleet(state.level);
+}
+
+// ---------- Collision helpers ----------
+function rectsHit(a, b){
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+// Damage a bunker; carve a small irregular hole around (px,py) in bunker pixel grid.
+function damageBunker(bk, px, py, fromBelow){
+  // Convert px,py into bunker-local coordinates
+  const lx = px - bk.x;
+  const ly = py - bk.y;
+  // Carve a small splat pattern
+  const splat = fromBelow ? [
+    [0,0],[1,0],[-1,0],[0,1],[0,-1],
+    [1,1],[-1,1],[2,0],[-2,0]
+  ] : [
+    [0,0],[1,0],[-1,0],[0,1],[0,-1],
+    [1,-1],[-1,-1],[2,0],[-2,0]
+  ];
+  for(const [dx,dy] of splat){
+    const x = lx+dx, y = ly+dy;
+    if(x>=0 && y>=0 && x<bk.w && y<bk.h) bk.grid[y][x] = 0;
+  }
+}
+
+// Test bullet vs bunker (returns true if hit & carved)
+function bulletHitsBunker(bk, bx, by, w, h, fromBelow){
+  const lx0 = bx - bk.x, ly0 = by - bk.y;
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const xx = lx0+x, yy = ly0+y;
+      if(xx>=0 && yy>=0 && xx<bk.w && yy<bk.h && bk.grid[yy][xx]){
+        damageBunker(bk, bx + Math.floor(w/2), by + (fromBelow ? 0 : h-1), fromBelow);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// ---------- Update ----------
+let frame = 0;
+function update(){
+  frame++;
+  if(state.mode !== "play" && state.mode !== "dying") return;
+
+  // ----- Player -----
+  const p = state.player;
+  if(state.mode === "play" && p.alive){
+    if(keys["ArrowLeft"])  p.x -= 1.2;
+    if(keys["ArrowRight"]) p.x += 1.2;
+    if(p.x < 8) p.x = 8;
+    if(p.x > W-8-p.w) p.x = W-8-p.w;
+    if(keys["Space"] && !state.bullet){
+      state.bullet = { x: Math.round(p.x + p.w/2), y: p.y - 4, w:1, h:4 };
+      beep(900, 0.05, "square", 0.05);
+    }
+  }
+
+  // ----- Player bullet -----
+  if(state.bullet){
+    state.bullet.y -= 4;
+    const b = state.bullet;
+    if(b.y < 24){ state.bullet = null; }
+    else {
+      // bunker
+      let hit = false;
+      for(const bk of state.bunkers){
+        if(b.x >= bk.x && b.x < bk.x + bk.w && b.y >= bk.y && b.y < bk.y + bk.h){
+          if(bulletHitsBunker(bk, b.x, b.y, b.w, b.h, false)){ hit = true; break; }
+        }
+      }
+      if(hit){ state.bullet = null; }
+      else{
+        // ufo
+        if(state.ufo){
+          const ub = {x:state.ufo.x, y:state.ufo.y, w:14, h:7};
+          if(rectsHit(b, ub)){
+            const pts = state.ufo.points;
+            state.score += pts;
+            state.explosions.push({x:state.ufo.x, y:state.ufo.y, t:24, sprite:"ex_r", text:String(pts)});
+            beep(140,0.4,"sawtooth",0.07);
+            state.ufo = null;
+            state.bullet = null;
+          }
+        }
+      }
+      if(state.bullet){
+        // enemies
+        for(const e of state.enemies){
+          if(!e.alive) continue;
+          if(rectsHit(b, e)){
+            e.alive = false;
+            const pts = e.type === "squid" ? 30 : e.type === "crab" ? 20 : 10;
+            state.score += pts;
+            const spr = e.type === "octopus" ? "ex_g" : (e.type === "squid" ? "ex_w" : "ex_w");
+            state.explosions.push({x:e.x-2, y:e.y, t:14, sprite:spr});
+            beep(220,0.07,"square",0.06);
+            state.bullet = null;
+            recomputeEnemySpeed();
+            // enemy bullet vs ufo? no.
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // ----- Enemy fleet movement -----
+  if(state.mode === "play"){
+    state.enemyStep++;
+    if(state.enemyStep >= state.enemyMoveEvery){
+      state.enemyStep = 0;
+      // Determine if any alive enemy would hit edge
+      let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for(const e of state.enemies) if(e.alive){
+        if(e.x < minX) minX = e.x;
+        if(e.x + e.w > maxX) maxX = e.x + e.w;
+        if(e.y + e.h > maxY) maxY = e.y + e.h;
+      }
+      let dropping = false;
+      if(state.enemyDir === 1 && maxX + 2 >= W - 8){ dropping = true; state.enemyDir = -1; }
+      else if(state.enemyDir === -1 && minX - 2 <= 8){ dropping = true; state.enemyDir = 1; }
+      const dx = dropping ? 0 : state.enemyDir * 2;
+      const dy = dropping ? 8 : 0;
+      for(const e of state.enemies) if(e.alive){ e.x += dx; e.y += dy; }
+      state.enemyAnim ^= 1;
+      marchStep();
+
+      // Check if reached player line / bunkers (loss)
+      if(maxY + dy >= state.player.y - 2){
+        state.bottomReached = true;
+        killPlayer();
+      }
+      // Enemies eating bunkers as they descend
+      for(const e of state.enemies) if(e.alive){
+        for(const bk of state.bunkers){
+          if(e.x + e.w >= bk.x && e.x <= bk.x + bk.w && e.y + e.h >= bk.y && e.y <= bk.y + bk.h){
+            // Erase the overlap region
+            for(let yy=0; yy<e.h; yy++){
+              for(let xx=0; xx<e.w; xx++){
+                const gx = e.x + xx - bk.x, gy = e.y + yy - bk.y;
+                if(gx>=0 && gy>=0 && gx<bk.w && gy<bk.h) bk.grid[gy][gx] = 0;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ----- Enemy shooting -----
+  if(state.mode === "play"){
+    state.enemyShootCD--;
+    if(state.enemyShootCD <= 0 && state.enemyBullets.length < 3){
+      // Pick a random column with at least one alive enemy; shoot from lowest in that column
+      const cols = {};
+      for(const e of state.enemies) if(e.alive){
+        if(!cols[e.col] || e.y > cols[e.col].y) cols[e.col] = e;
+      }
+      const arr = Object.values(cols);
+      if(arr.length){
+        const shooter = arr[Math.floor(Math.random()*arr.length)];
+        const kinds = ["plunger","squiggle","rolling"];
+        const kind = kinds[Math.floor(Math.random()*kinds.length)];
+        state.enemyBullets.push({
+          x: shooter.x + Math.floor(shooter.w/2),
+          y: shooter.y + shooter.h,
+          kind, frame: 0
+        });
+      }
+      // CD shorter when fewer enemies
+      const n = aliveCount();
+      state.enemyShootCD = 30 + Math.floor(Math.random()*60) + Math.max(0, n-20);
+    }
+  }
+
+  // ----- Move enemy bullets -----
+  for(const eb of state.enemyBullets){
+    eb.y += 1.6;
+    eb.frame++;
+  }
+  // Cull / collide enemy bullets
+  for(let i=state.enemyBullets.length-1; i>=0; i--){
+    const eb = state.enemyBullets[i];
+    let removed = false;
+    if(eb.y > H - 16){
+      state.enemyBullets.splice(i,1);
+      continue;
+    }
+    // bunker collision
+    for(const bk of state.bunkers){
+      if(eb.x >= bk.x && eb.x < bk.x + bk.w && eb.y >= bk.y && eb.y < bk.y + bk.h){
+        if(bulletHitsBunker(bk, eb.x, eb.y, 1, 4, true)){
+          state.enemyBullets.splice(i,1);
+          removed = true;
+          break;
+        }
+      }
+    }
+    if(removed) continue;
+    // collision with player bullet (canceling)
+    if(state.bullet){
+      const pb = state.bullet;
+      if(Math.abs(pb.x - eb.x) <= 1 && Math.abs(pb.y - eb.y) <= 6){
+        state.bullet = null;
+        if(Math.random() < 0.5){
+          state.enemyBullets.splice(i,1);
+          removed = true;
+        }
+      }
+    }
+    if(removed) continue;
+    // collision with player
+    if(state.player.alive && state.mode === "play"){
+      const pr = {x:state.player.x, y:state.player.y, w:state.player.w, h:state.player.h};
+      const br = {x:eb.x-1, y:eb.y, w:2, h:6};
+      if(rectsHit(pr, br)){
+        state.enemyBullets.splice(i,1);
+        killPlayer();
+      }
+    }
+  }
+
+  // ----- UFO -----
+  if(state.mode === "play"){
+    if(!state.ufo){
+      state.ufoCD--;
+      if(state.ufoCD <= 0 && aliveCount() > 7){
+        const fromLeft = Math.random() < 0.5;
+        state.ufo = {
+          x: fromLeft ? -16 : W,
+          y: 28,
+          dir: fromLeft ? 1 : -1,
+          // mystery score, original: pseudo-random 50/100/150/300
+          points: [50,100,150,300][Math.floor(Math.random()*4)]
+        };
+        // ufo hum (very short tone)
+        beep(180, 0.05, "square", 0.05);
+      }
+    } else {
+      state.ufo.x += state.ufo.dir * 0.7;
+      if(state.ufo.x < -20 || state.ufo.x > W+4){
+        state.ufo = null;
+        state.ufoCD = 600 + Math.floor(Math.random()*900);
+      }
+    }
+  }
+
+  // ----- Explosions -----
+  for(let i=state.explosions.length-1;i>=0;i--){
+    state.explosions[i].t--;
+    if(state.explosions[i].t <= 0) state.explosions.splice(i,1);
+  }
+
+  // ----- Player death sequence -----
+  if(state.mode === "dying"){
+    state.player.deadT--;
+    state.player.anim = (Math.floor(frame/4) % 2);
+    if(state.player.deadT <= 0){
+      if(state.bottomReached || state.lives <= 0){
+        if(state.score > state.hi){ state.hi = state.score; localStorage.setItem("si_hi", String(state.hi)); }
+        state.mode = "gameover";
+      } else {
+        state.player.alive = true;
+        state.player.x = 20;
+        state.mode = "play";
+      }
+    }
+  }
+
+  // ----- Win wave -----
+  if(state.mode === "play" && aliveCount() === 0){
+    nextWave();
+  }
+}
+
+function killPlayer(){
+  if(!state.player.alive) return;
+  state.player.alive = false;
+  state.player.deadT = 90;
+  state.lives--;
+  state.mode = "dying";
+  noise(0.5, 0.12);
+}
+
+// ---------- Render ----------
+function drawSprite(sp, x, y){ g.drawImage(sp, Math.round(x), Math.round(y)); }
+
+function drawText(s, x, y, color="#ffffff"){
+  // 5x7 bitmap font (uppercase, digits, basic punctuation)
+  g.save();
+  g.fillStyle = color;
+  const W5 = 5, H7 = 7;
+  for(let i=0;i<s.length;i++){
+    const ch = s[i];
+    const glyph = FONT[ch] || FONT["?"];
+    for(let yy=0; yy<H7; yy++){
+      for(let xx=0; xx<W5; xx++){
+        if(glyph[yy] && glyph[yy][xx] === '×'){
+          g.fillRect(x + i*6 + xx, y + yy, 1, 1);
+        }
+      }
+    }
+  }
+  g.restore();
+}
+
+const FONT = {
+  "0":["·×××·","×···×","×··××","×·×·×","××··×","×···×","·×××·"],
+  "1":["··×··","·××··","··×··","··×··","··×··","··×··","·×××·"],
+  "2":["·×××·","×···×","····×","···×·","··×··","·×···","×××××"],
+  "3":["·×××·","×···×","····×","··××·","····×","×···×","·×××·"],
+  "4":["···×·","··××·","·×·×·","×··×·","×××××","···×·","···×·"],
+  "5":["×××××","×····","××××·","····×","····×","×···×","·×××·"],
+  "6":["··××·","·×···","×····","××××·","×···×","×···×","·×××·"],
+  "7":["×××××","····×","···×·","··×··","·×···","·×···","·×···"],
+  "8":["·×××·","×···×","×···×","·×××·","×···×","×···×","·×××·"],
+  "9":["·×××·","×···×","×···×","·××××","····×","···×·","·××··"],
+  "A":["··×··","·×·×·","×···×","×···×","×××××","×···×","×···×"],
+  "B":["××××·","×···×","×···×","××××·","×···×","×···×","××××·"],
+  "C":["·××××","×····","×····","×····","×····","×····","·××××"],
+  "D":["××××·","×···×","×···×","×···×","×···×","×···×","××××·"],
+  "E":["×××××","×····","×····","××××·","×····","×····","×××××"],
+  "F":["×××××","×····","×····","××××·","×····","×····","×····"],
+  "G":["·××××","×····","×····","×··××","×···×","×···×","·××××"],
+  "H":["×···×","×···×","×···×","×××××","×···×","×···×","×···×"],
+  "I":["·×××·","··×··","··×··","··×··","··×··","··×··","·×××·"],
+  "J":["··×××","···×·","···×·","···×·","···×·","×··×·","·××··"],
+  "K":["×···×","×··×·","×·×··","××···","×·×··","×··×·","×···×"],
+  "L":["×····","×····","×····","×····","×····","×····","×××××"],
+  "M":["×···×","××·××","×·×·×","×·×·×","×···×","×···×","×···×"],
+  "N":["×···×","××··×","××··×","×·×·×","×··××","×··××","×···×"],
+  "O":["·×××·","×···×","×···×","×···×","×···×","×···×","·×××·"],
+  "P":["××××·","×···×","×···×","××××·","×····","×····","×····"],
+  "Q":["·×××·","×···×","×···×","×···×","×·×·×","×··×·","·××·×"],
+  "R":["××××·","×···×","×···×","××××·","×·×··","×··×·","×···×"],
+  "S":["·××××","×····","×····","·×××·","····×","····×","××××·"],
+  "T":["×××××","··×··","··×··","··×··","··×··","··×··","··×··"],
+  "U":["×···×","×···×","×···×","×···×","×···×","×···×","·×××·"],
+  "V":["×···×","×···×","×···×","×···×","×···×","·×·×·","··×··"],
+  "W":["×···×","×···×","×···×","×·×·×","×·×·×","×·×·×","·×·×·"],
+  "X":["×···×","×···×","·×·×·","··×··","·×·×·","×···×","×···×"],
+  "Y":["×···×","×···×","·×·×·","··×··","··×··","··×··","··×··"],
+  "Z":["×××××","····×","···×·","··×··","·×···","×····","×××××"],
+  " ":["·····","·····","·····","·····","·····","·····","·····"],
+  "<":["···×·","··×··","·×···","×····","·×···","··×··","···×·"],
+  ">":["·×···","··×··","···×·","····×","···×·","··×··","·×···"],
+  "=":["·····","·····","×××××","·····","×××××","·····","·····"],
+  "?":["·×××·","×···×","····×","···×·","··×··","·····","··×··"],
+  "!":["··×··","··×··","··×··","··×··","··×··","·····","··×··"],
+  ".":["·····","·····","·····","·····","·····","·····","··×··"],
+  ":":["·····","··×··","·····","·····","·····","··×··","·····"],
+  "-":["·····","·····","·····","×××××","·····","·····","·····"],
+};
+
+function drawEnemyBullet(eb){
+  // Three bullet shapes with simple animated frames
+  g.fillStyle = "#ffffff";
+  const f = Math.floor(eb.frame/4) % 4;
+  const px = (x,y) => g.fillRect(eb.x + x, eb.y + y, 1, 1);
+  if(eb.kind === "plunger"){
+    // straight rod + alternating tail
+    for(let i=0;i<6;i++) px(0, i);
+    px(-1, f%2===0 ? 5 : 4);
+    px( 1, f%2===0 ? 4 : 5);
+  } else if(eb.kind === "squiggle"){
+    const shape = [
+      ["··×","·×·","×··","·×·","··×","·×·"],
+      ["×··","·×·","··×","·×·","×··","·×·"],
+    ][f%2];
+    for(let y=0;y<shape.length;y++){
+      for(let x=0;x<shape[y].length;x++){
+        if(shape[y][x] === '×') g.fillRect(eb.x + x - 1, eb.y + y, 1, 1);
+      }
+    }
+  } else { // rolling
+    const shape = [
+      ["·×·","×·×","·×·","×·×","·×·","×·×"],
+      ["×·×","·×·","×·×","·×·","×·×","·×·"],
+    ][f%2];
+    for(let y=0;y<shape.length;y++){
+      for(let x=0;x<shape[y].length;x++){
+        if(shape[y][x] === '×') g.fillRect(eb.x + x - 1, eb.y + y, 1, 1);
+      }
+    }
+  }
+}
+
+function render(){
+  // Clear
+  g.fillStyle = "#000"; g.fillRect(0,0,W,H);
+
+  // Top HUD
+  drawText("SCORE<1>", 8, 4, C_WHITE);
+  drawText("HI-SCORE", 86, 4, C_WHITE);
+  drawText("SCORE<2>", 168, 4, C_WHITE);
+  drawText(String(state.score).padStart(4,"0"), 16, 14, C_WHITE);
+  drawText(String(state.hi).padStart(4,"0"), 96, 14, C_WHITE);
+  drawText("0000", 176, 14, C_WHITE);
+
+  if(state.mode === "title"){
+    drawText("PLAY", W/2 - 12, 70, C_WHITE);
+    drawText("SPACE  INVADERS", W/2 - 45, 86, C_WHITE);
+    drawText("*SCORE ADVANCE TABLE*", W/2 - 63, 110, C_WHITE);
+    g.drawImage(sprites.ufo, W/2 - 50, 130);
+    drawText("= ? MYSTERY", W/2 - 30, 132, C_RED);
+    g.drawImage(sprites.squid[0], W/2 - 46, 148);
+    drawText("= 30 POINTS", W/2 - 30, 148, C_WHITE);
+    g.drawImage(sprites.crab[0], W/2 - 47, 162);
+    drawText("= 20 POINTS", W/2 - 30, 162, C_WHITE);
+    g.drawImage(sprites.octopus[0], W/2 - 48, 176);
+    drawText("= 10 POINTS", W/2 - 30, 176, C_WHITE);
+    drawText("PRESS ENTER TO PLAY", 36, 220, C_GREEN);
+  }
+
+  if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover"){
+    // Enemies
+    for(const e of state.enemies){
+      if(!e.alive) continue;
+      const f = state.enemyAnim;
+      const sp = sprites[e.type][f];
+      drawSprite(sp, e.x, e.y);
+    }
+    // Bunkers
+    for(const bk of state.bunkers){
+      g.fillStyle = C_GREEN;
+      for(let y=0;y<bk.h;y++){
+        for(let x=0;x<bk.w;x++){
+          if(bk.grid[y][x]) g.fillRect(bk.x + x, bk.y + y, 1, 1);
+        }
+      }
+    }
+    // UFO
+    if(state.ufo){
+      drawSprite(sprites.ufo, state.ufo.x, state.ufo.y);
+    }
+    // Player
+    if(state.mode === "dying"){
+      drawSprite(state.player.anim ? sprites.pex1 : sprites.pex2, state.player.x, state.player.y);
+    } else if(state.player.alive){
+      drawSprite(sprites.player, state.player.x, state.player.y);
+    }
+    // Player bullet
+    if(state.bullet){
+      g.fillStyle = "#ffffff";
+      g.fillRect(state.bullet.x, state.bullet.y, 1, 4);
+    }
+    // Enemy bullets
+    for(const eb of state.enemyBullets) drawEnemyBullet(eb);
+    // Explosions
+    for(const ex of state.explosions){
+      drawSprite(sprites[ex.sprite], ex.x, ex.y);
+      if(ex.text){
+        drawText(ex.text, ex.x - 2, ex.y - 8, C_RED);
+      }
+    }
+    // Ground line (green)
+    g.fillStyle = C_GREEN;
+    g.fillRect(0, H-12, W, 1);
+
+    // Lives display
+    drawText(String(state.lives), 8, H-9, C_WHITE);
+    for(let i=0;i<Math.max(0,state.lives-1);i++){
+      drawSprite(sprites.player, 24 + i*16, H-10);
+    }
+    drawText("CREDIT 01", W-60, H-9, C_WHITE);
+
+    if(state.mode === "gameover"){
+      drawText("GAME OVER", W/2 - 27, H/2 - 8, C_RED);
+      drawText("PRESS ENTER", W/2 - 33, H/2 + 6, C_WHITE);
+    }
+  }
+
+  // Blit upscaled to visible canvas
+  ctx.drawImage(off, 0, 0, W*S, H*S);
+}
+
+// ---------- Title-screen demo (animated little marquee) ----------
+function titleAnim(){
+  state.enemyAnim = Math.floor(frame/30) % 2;
+}
+
+// ---------- Main loop ----------
+function loop(){
+  if(state.mode === "title") titleAnim();
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+// init
+buildBunkers();
+buildFleet(1);
+state.mode = "title";
+loop();
+
+})();
+</script>
+</body>
+</html>
