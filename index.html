@@ -4,11 +4,10 @@
 <meta charset="utf-8">
 <title>SPACE INVADERS</title>
 <style>
-  html,body{margin:0;height:100%;background:#000;color:#fff;font-family:"Courier New",monospace;overflow:hidden;}
-  #wrap{display:flex;align-items:center;justify-content:center;height:100%;}
-  canvas{background:#000;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 30px #111;border:2px solid #222;outline:none;cursor:pointer;}
-  canvas:focus{border-color:#22ff22;}
-  #help{position:fixed;left:8px;bottom:6px;color:#666;font-size:12px;letter-spacing:1px;}
+  html,body{margin:0;height:100%;width:100%;background:#000;color:#fff;font-family:"Courier New",monospace;overflow:hidden;}
+  #wrap{display:flex;align-items:center;justify-content:center;height:100vh;width:100vw;}
+  canvas{background:#000;image-rendering:pixelated;image-rendering:crisp-edges;outline:none;cursor:crosshair;display:block;}
+  #help{position:fixed;left:8px;bottom:6px;color:#444;font-size:12px;letter-spacing:1px;pointer-events:none;}
 </style>
 </head>
 <body>
@@ -23,12 +22,30 @@ const cv = document.getElementById("game");
 const ctx = cv.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
-// Logical resolution emulates the original 224x256, scaled x2 -> 448x512
-const W = 224, H = 256, S = 2;
+// Logical resolution emulates the original 224x256. The visible canvas is
+// resized to fill the viewport at the largest integer scale that fits, so
+// pixels stay crisp and proportions match the arcade.
+const W = 224, H = 256;
+let S = 2; // computed by fitCanvas()
 const off = document.createElement("canvas");
 off.width = W; off.height = H;
 const g = off.getContext("2d");
 g.imageSmoothingEnabled = false;
+
+function fitCanvas(){
+  const vw = Math.max(200, window.innerWidth);
+  const vh = Math.max(200, window.innerHeight);
+  // Largest integer scale that still fits in the viewport.
+  let s = Math.floor(Math.min(vw / W, vh / H));
+  if(s < 1) s = 1;
+  S = s;
+  cv.width  = W * S;
+  cv.height = H * S;
+  // Drawing context state is reset on width/height change — restore it.
+  ctx.imageSmoothingEnabled = false;
+}
+fitCanvas();
+addEventListener("resize", fitCanvas);
 
 // ---------- Sprites (1 = pixel on) ----------
 // Original Space Invaders sprites, two animation frames each.
@@ -251,10 +268,16 @@ function onKeyDown(e){
   if(code === "KeyA") code = "ArrowLeft";
   if(code === "KeyD") code = "ArrowRight";
   if(code === "KeyZ" || code === "KeyX") code = "Space";
+  // Ignore key auto-repeat — fixes "held Space restarts game on game over".
+  if(e.repeat){ if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter"].includes(code)) e.preventDefault(); return; }
   keys[code] = true;
   if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter"].includes(code)) e.preventDefault();
+  // Restart only on ENTER (Space stays as fire so a stray fire press
+  // doesn't accidentally restart). Also block restart for a short cooldown
+  // after entering gameover, so the press that killed you can't immediately
+  // queue a restart.
   if(state.mode === "title" && (code === "Enter" || code === "Space")) startGame();
-  else if(state.mode === "gameover" && (code === "Enter" || code === "Space")) startGame();
+  else if(state.mode === "gameover" && code === "Enter" && state.restartArmed) startGame();
 }
 function onKeyUp(e){
   let code = e.code;
@@ -277,7 +300,11 @@ function focusAndMaybeStart(){
   try { cv.focus(); } catch(e){}
   // Audio contexts must be resumed by a user gesture in modern browsers.
   try { audio().resume && audio().resume(); } catch(e){}
-  if(state.mode === "title" || state.mode === "gameover") startGame();
+  // Only auto-start from the title screen. On gameover require the player to
+  // press Enter (or click the explicit GAME OVER prompt area) so a stray
+  // click in the play area can't restart unexpectedly.
+  if(state.mode === "title") startGame();
+  else if(state.mode === "gameover" && state.restartArmed) startGame();
 }
 cv.addEventListener("mousedown", focusAndMaybeStart);
 cv.addEventListener("touchstart", e => { e.preventDefault(); focusAndMaybeStart(); }, {passive:false});
@@ -338,6 +365,8 @@ const state = {
   explosions: [],      // {x,y,t,sprite}
   bottomReached: false,
   flash: 0,
+  restartArmed: false,    // gameover restart cooldown — set true ~1s after gameover
+  gameoverT: 0,           // ticks since entering gameover
 };
 
 // ---------- Bunkers ----------
@@ -421,6 +450,8 @@ function startGame(){
   state.ufo = null;
   state.ufoCD = 1500;
   state.bottomReached = false;
+  state.restartArmed = false;
+  state.gameoverT = 0;
   buildBunkers();
   buildFleet(state.level);
 }
@@ -563,9 +594,14 @@ function update(){
       state.enemyAnim ^= 1;
       marchStep();
 
-      // Check if reached player line / bunkers (loss)
+      // Check if reached player line / bunkers — instant game over (faithful
+      // to the arcade): invaders touching ground ends the game regardless of
+      // remaining lives.
       if(maxY + dy >= state.player.y - 2){
         state.bottomReached = true;
+        // Drain remaining lives so the dying-end check goes straight to
+        // game over instead of respawning into an already-lost field.
+        state.lives = 1;
         killPlayer();
       }
       // Enemies eating bunkers as they descend
@@ -697,6 +733,8 @@ function update(){
       if(state.bottomReached || state.lives <= 0){
         saveHi();
         state.mode = "gameover";
+        state.gameoverT = 0;
+        state.restartArmed = false;
       } else {
         state.player.alive = true;
         state.player.x = 20;
@@ -911,16 +949,19 @@ function render(){
     g.fillStyle = C_GREEN;
     g.fillRect(0, H-12, W, 1);
 
-    // Lives display
-    drawText(String(state.lives), 8, H-9, C_WHITE);
-    for(let i=0;i<Math.max(0,state.lives-1);i++){
+    // Lives display: digit + one ship icon per remaining life so the count
+    // is unambiguous at a glance.
+    drawText(String(Math.max(0,state.lives)), 8, H-9, C_WHITE);
+    for(let i=0;i<Math.max(0,state.lives);i++){
       drawSprite(sprites.player, 24 + i*16, H-10);
     }
     drawText("CREDIT 01", W-60, H-9, C_WHITE);
 
     if(state.mode === "gameover"){
       drawText("GAME OVER", W/2 - 27, H/2 - 8, C_RED);
-      drawText("PRESS ENTER OR CLICK", W/2 - 60, H/2 + 6, C_WHITE);
+      if(state.restartArmed && Math.floor(frame/30) % 2 === 0){
+        drawText("PRESS ENTER", W/2 - 33, H/2 + 6, C_WHITE);
+      }
     }
   }
   // Blit happens in safeRender() so we never double-blit on error.
@@ -940,6 +981,13 @@ let errorCount = 0;
 function safeUpdate(){
   try {
     if(state.mode === "title") titleAnim();
+    if(state.mode === "gameover"){
+      state.gameoverT++;
+      if(state.gameoverT > 60) state.restartArmed = true;
+      // Also clear any held keys so a held Space at the moment of death
+      // can't queue up a restart the moment we arm.
+      keys["Space"] = false;
+    }
     update();
   } catch(e){
     errorCount++;
