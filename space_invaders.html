@@ -6,13 +6,14 @@
 <style>
   html,body{margin:0;height:100%;background:#000;color:#fff;font-family:"Courier New",monospace;overflow:hidden;}
   #wrap{display:flex;align-items:center;justify-content:center;height:100%;}
-  canvas{background:#000;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 30px #111;border:2px solid #222;}
+  canvas{background:#000;image-rendering:pixelated;image-rendering:crisp-edges;box-shadow:0 0 30px #111;border:2px solid #222;outline:none;cursor:pointer;}
+  canvas:focus{border-color:#22ff22;}
   #help{position:fixed;left:8px;bottom:6px;color:#666;font-size:12px;letter-spacing:1px;}
 </style>
 </head>
 <body>
-<div id="wrap"><canvas id="game" width="448" height="512"></canvas></div>
-<div id="help">&larr; &rarr; MOVE &nbsp; SPACE FIRE &nbsp; ENTER START</div>
+<div id="wrap"><canvas id="game" width="448" height="512" tabindex="0"></canvas></div>
+<div id="help">&larr; &rarr; OR A/D MOVE &nbsp; SPACE/Z FIRE &nbsp; ENTER OR CLICK TO START</div>
 <script>
 (() => {
 "use strict";
@@ -233,13 +234,63 @@ function marchStep(){ beep(MARCH[marchIdx % 4], 0.08, "square", 0.06); marchIdx+
 
 // ---------- Input ----------
 const keys = {};
-addEventListener("keydown", e => {
-  keys[e.code] = true;
-  if(["Space","ArrowLeft","ArrowRight","Enter"].includes(e.code)) e.preventDefault();
-  if(state.mode === "title" && (e.code === "Enter" || e.code === "Space")) startGame();
-  else if(state.mode === "gameover" && e.code === "Enter") startGame();
+function onKeyDown(e){
+  // Normalize WASD/Z to arrow/space equivalents
+  let code = e.code;
+  if(code === "KeyA") code = "ArrowLeft";
+  if(code === "KeyD") code = "ArrowRight";
+  if(code === "KeyZ" || code === "KeyX") code = "Space";
+  keys[code] = true;
+  if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter"].includes(code)) e.preventDefault();
+  if(state.mode === "title" && (code === "Enter" || code === "Space")) startGame();
+  else if(state.mode === "gameover" && (code === "Enter" || code === "Space")) startGame();
+}
+function onKeyUp(e){
+  let code = e.code;
+  if(code === "KeyA") code = "ArrowLeft";
+  if(code === "KeyD") code = "ArrowRight";
+  if(code === "KeyZ" || code === "KeyX") code = "Space";
+  keys[code] = false;
+}
+// Listen on both window and the canvas so it works whether the iframe/panel
+// has top-level focus or only the canvas has focus.
+addEventListener("keydown", onKeyDown);
+addEventListener("keyup",   onKeyUp);
+cv.addEventListener("keydown", onKeyDown);
+cv.addEventListener("keyup",   onKeyUp);
+
+// Click-to-start: a click anywhere on the canvas focuses it and (on title /
+// gameover) starts the game. This is essential when the page is hosted inside
+// a preview panel that may not pass keystrokes through until you interact.
+function focusAndMaybeStart(){
+  try { cv.focus(); } catch(e){}
+  // Audio contexts must be resumed by a user gesture in modern browsers.
+  try { audio().resume && audio().resume(); } catch(e){}
+  if(state.mode === "title" || state.mode === "gameover") startGame();
+}
+cv.addEventListener("mousedown", focusAndMaybeStart);
+cv.addEventListener("touchstart", e => { e.preventDefault(); focusAndMaybeStart(); }, {passive:false});
+// Touch controls for mobile
+let touchStartX = null;
+cv.addEventListener("touchmove", e => {
+  if(state.mode !== "play") return;
+  e.preventDefault();
+  const t = e.touches[0];
+  if(touchStartX === null) touchStartX = t.clientX;
+  const dx = t.clientX - touchStartX;
+  if(dx < -8){ keys["ArrowLeft"] = true; keys["ArrowRight"] = false; touchStartX = t.clientX; }
+  else if(dx > 8){ keys["ArrowRight"] = true; keys["ArrowLeft"] = false; touchStartX = t.clientX; }
+}, {passive:false});
+cv.addEventListener("touchend", () => {
+  keys["ArrowLeft"] = false; keys["ArrowRight"] = false; touchStartX = null;
+  // Tap = fire
+  if(state.mode === "play") keys["Space"] = true;
+  setTimeout(() => { keys["Space"] = false; }, 50);
 });
-addEventListener("keyup",   e => { keys[e.code] = false; });
+
+// Auto-focus on load so keys work immediately when possible.
+addEventListener("load", () => { try { cv.focus(); } catch(e){} });
+setTimeout(() => { try { cv.focus(); } catch(e){} }, 50);
 
 // ---------- Game state ----------
 const state = {
@@ -772,7 +823,11 @@ function render(){
     drawText("= 20 POINTS", W/2 - 30, 162, C_WHITE);
     g.drawImage(sprites.octopus[0], W/2 - 48, 176);
     drawText("= 10 POINTS", W/2 - 30, 176, C_WHITE);
-    drawText("PRESS ENTER TO PLAY", 36, 220, C_GREEN);
+    // Blink the prompt so it's obvious — and accept clicks too.
+    if(Math.floor(frame/30) % 2 === 0){
+      drawText("CLICK OR PRESS ENTER", 32, 218, C_GREEN);
+    }
+    drawText("INSERT COIN", 76, 232, C_WHITE);
   }
 
   if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover"){
