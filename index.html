@@ -12,7 +12,7 @@
 </head>
 <body>
 <div id="wrap"><canvas id="game" width="448" height="512" tabindex="0"></canvas></div>
-<div id="help">&larr; &rarr; OR A/D MOVE &nbsp; SPACE/Z FIRE &nbsp; ENTER OR CLICK TO START</div>
+<div id="help">&larr;&rarr; ROTATE/MOVE &nbsp; &uarr;/W THRUST &nbsp; SPACE/Z FIRE &nbsp; SHIFT/H HYPERSPACE &nbsp; ENTER START</div>
 <script>
 (() => {
 "use strict";
@@ -267,11 +267,15 @@ function onKeyDown(e){
   let code = e.code;
   if(code === "KeyA") code = "ArrowLeft";
   if(code === "KeyD") code = "ArrowRight";
+  if(code === "KeyW") code = "ArrowUp";
+  if(code === "KeyS") code = "ArrowDown";
   if(code === "KeyZ" || code === "KeyX") code = "Space";
+  // Hyperspace: Shift or H both map to a synthetic "Hyper" key.
+  if(code === "ShiftLeft" || code === "ShiftRight" || code === "KeyH") code = "Hyper";
   // Ignore key auto-repeat — fixes "held Space restarts game on game over".
-  if(e.repeat){ if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter"].includes(code)) e.preventDefault(); return; }
+  if(e.repeat){ if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter","Hyper"].includes(code)) e.preventDefault(); return; }
   keys[code] = true;
-  if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter"].includes(code)) e.preventDefault();
+  if(["Space","ArrowLeft","ArrowRight","ArrowUp","ArrowDown","Enter","Hyper"].includes(code)) e.preventDefault();
   // Restart only on ENTER (Space stays as fire so a stray fire press
   // doesn't accidentally restart). Also block restart for a short cooldown
   // after entering gameover, so the press that killed you can't immediately
@@ -283,7 +287,10 @@ function onKeyUp(e){
   let code = e.code;
   if(code === "KeyA") code = "ArrowLeft";
   if(code === "KeyD") code = "ArrowRight";
+  if(code === "KeyW") code = "ArrowUp";
+  if(code === "KeyS") code = "ArrowDown";
   if(code === "KeyZ" || code === "KeyX") code = "Space";
+  if(code === "ShiftLeft" || code === "ShiftRight" || code === "KeyH") code = "Hyper";
   keys[code] = false;
 }
 // Listen on both window and the canvas so it works whether the iframe/panel
@@ -345,11 +352,12 @@ const safeStore = {
 
 // ---------- Game state ----------
 const state = {
-  mode: "title",       // title | play | dying | gameover
+  mode: "title",       // title | play | dying | gameover | transition
+  gameType: "invaders",// invaders | asteroids
   score: 0,
   hi: parseInt(safeStore.get("si_hi","0"),10) || 0,
   lives: 3,
-  level: 1,
+  level: 1,            // round number; shared across both games for difficulty
   player: { x: 20, y: H-24, w: 13, h: 7, alive:true, deadT: 0, anim:0, invulnT: 0 },
   bullet: null,        // {x,y}
   enemies: [],         // {x,y,type,alive,row,col}
@@ -367,6 +375,24 @@ const state = {
   flash: 0,
   restartArmed: false,    // gameover restart cooldown — set true ~1s after gameover
   gameoverT: 0,           // ticks since entering gameover
+  // Inter-game transition
+  transitionT: 0,
+  transitionTo: null,     // "asteroids" | "invaders"
+  transitionLabel: "",
+};
+
+// ---------- Asteroids state ----------
+const ast = {
+  ship: { x: W/2, y: H/2, vx:0, vy:0, angle:-Math.PI/2, alive:true, deadT:0, invulnT:0, thrusting:false, hyperT:0 },
+  bullets: [],
+  asteroids: [],
+  ufo: null,
+  ufoCD: 600,
+  particles: [],
+  thrustCD: 0,
+  ufoSirenPhase: 0,
+  fireLatch: false,
+  hyperLatch: false,
 };
 
 // ---------- Bunkers ----------
@@ -431,19 +457,469 @@ function buildFleet(level){
 function aliveCount(){ let n=0; for(const e of state.enemies) if(e.alive) n++; return n; }
 function recomputeEnemySpeed(){
   // Original: speeds up dramatically as fleet thins. 55 -> slow, 1 -> very fast.
+  // Higher rounds (after one Invaders→Asteroids→Invaders cycle) start faster too.
   const n = aliveCount();
-  state.enemyMoveEvery = Math.max(3, Math.floor(2 + n*0.85));
+  const speedup = Math.min(state.level - 1, 6); // shave up to 6 frames per round
+  state.enemyMoveEvery = Math.max(2, Math.floor(2 + n*0.85) - speedup);
+}
+
+// ---------- Asteroids ----------
+function asteroidRadius(size){
+  // size 3=large, 2=medium, 1=small. Hitboxes are circular for simplicity;
+  // visual shape is irregular polygon centered on (x,y) with radius scaled by size.
+  return size === 3 ? 18 : size === 2 ? 10 : 5;
+}
+
+function makeAsteroidShape(){
+  // 9-12 vertices on a unit circle with random radial jitter for that
+  // characteristic lumpy silhouette.
+  const n = 9 + Math.floor(Math.random()*4);
+  const verts = [];
+  for(let i=0;i<n;i++){
+    const a = (i/n) * Math.PI*2;
+    const r = 0.72 + Math.random()*0.45;
+    verts.push({a, r});
+  }
+  return verts;
+}
+
+function spawnAsteroid(x, y, size){
+  // Smaller fragments fly faster; level scales overall pace.
+  const base = 0.35 + (3 - size) * 0.25;
+  const speed = base * (0.8 + Math.random()*0.6) * (1 + (state.level-1)*0.08);
+  const dir = Math.random() * Math.PI * 2;
+  return {
+    x, y,
+    vx: Math.cos(dir) * speed,
+    vy: Math.sin(dir) * speed,
+    size,
+    rot: Math.random() * Math.PI*2,
+    spin: (Math.random()-0.5) * 0.06,
+    shape: makeAsteroidShape(),
+  };
+}
+
+function buildAsteroidsLevel(){
+  ast.asteroids = [];
+  ast.bullets = [];
+  ast.particles = [];
+  ast.ufo = null;
+  // More asteroids each cycle (capped). Level 1 → 4, level 2 → 5, etc.
+  const count = Math.min(4 + Math.floor((state.level-1)/1), 11);
+  for(let i=0;i<count;i++){
+    let x, y;
+    // Spawn away from the center so the ship has a moment to orient.
+    do {
+      x = Math.random() * W;
+      y = Math.random() * H;
+    } while(Math.hypot(x - W/2, y - H/2) < 70);
+    ast.asteroids.push(spawnAsteroid(x, y, 3));
+  }
+  ast.ship.x = W/2; ast.ship.y = H/2;
+  ast.ship.vx = 0; ast.ship.vy = 0;
+  ast.ship.angle = -Math.PI/2;
+  ast.ship.alive = true;
+  ast.ship.deadT = 0;
+  ast.ship.invulnT = 120;          // ~2s respawn safety
+  ast.ship.thrusting = false;
+  ast.ship.hyperT = 0;
+  ast.ufoCD = 600 + Math.floor(Math.random()*600);
+  ast.fireLatch = false;
+  ast.hyperLatch = false;
+}
+
+function wrapPos(p){
+  if(p.x < 0) p.x += W;
+  else if(p.x >= W) p.x -= W;
+  if(p.y < 0) p.y += H;
+  else if(p.y >= H) p.y -= H;
+}
+
+function spawnParticles(x, y, n, speedMax){
+  for(let i=0;i<n;i++){
+    const dir = Math.random() * Math.PI * 2;
+    const sp = Math.random() * speedMax + 0.3;
+    ast.particles.push({
+      x, y,
+      vx: Math.cos(dir)*sp,
+      vy: Math.sin(dir)*sp,
+      life: 22 + Math.floor(Math.random()*22),
+    });
+  }
+}
+
+function killShip(){
+  if(!ast.ship.alive) return;
+  if(ast.ship.invulnT > 0) return;       // can't die during respawn invuln
+  ast.ship.alive = false;
+  ast.ship.deadT = 90;
+  ast.ship.thrusting = false;
+  state.lives--;
+  state.mode = "dying";
+  spawnParticles(ast.ship.x, ast.ship.y, 22, 2.6);
+  noise(0.45, 0.13);
+}
+
+function safeToRespawn(){
+  // Don't drop the ship right on top of a rock — wait until center is clear.
+  for(const a of ast.asteroids){
+    const dx = a.x - W/2, dy = a.y - H/2;
+    if(Math.hypot(dx, dy) < 50) return false;
+  }
+  return true;
+}
+
+function updateAsteroids(){
+  const s = ast.ship;
+  if(s.invulnT > 0) s.invulnT--;
+  if(s.hyperT > 0) s.hyperT--;
+
+  // ----- Ship controls (only while alive and not in hyperspace) -----
+  if(state.mode === "play" && s.alive && s.hyperT === 0){
+    if(keys["ArrowLeft"])  s.angle -= 0.085;
+    if(keys["ArrowRight"]) s.angle += 0.085;
+    s.thrusting = !!keys["ArrowUp"];
+    if(s.thrusting){
+      s.vx += Math.cos(s.angle) * 0.11;
+      s.vy += Math.sin(s.angle) * 0.11;
+      const sp = Math.hypot(s.vx, s.vy);
+      const max = 4.2;
+      if(sp > max){ s.vx = s.vx/sp*max; s.vy = s.vy/sp*max; }
+      // Chunky thrust pulse — short low-frequency saw bursts at ~15Hz.
+      if(ast.thrustCD <= 0){
+        beep(55 + Math.random()*15, 0.06, "sawtooth", 0.045);
+        ast.thrustCD = 4;
+      }
+    }
+    if(ast.thrustCD > 0) ast.thrustCD--;
+    // Light space friction so the ship eventually coasts to a stop.
+    s.vx *= 0.992;
+    s.vy *= 0.992;
+
+    // Hyperspace — edge-triggered (latch) so a held key only fires once.
+    if(keys["Hyper"] && !ast.hyperLatch){
+      ast.hyperLatch = true;
+      s.x = 12 + Math.random() * (W - 24);
+      s.y = 24 + Math.random() * (H - 48);
+      s.vx = 0; s.vy = 0;
+      s.hyperT = 24;
+      noise(0.18, 0.07);
+      // Classic 1979 cabinet: small chance the ship reappears destroyed.
+      if(Math.random() < 0.07){
+        // Defer one frame so hyperT hides the ship cleanly first.
+        setTimeout(() => { if(state.gameType === "asteroids") killShip(); }, 60);
+      }
+    }
+    if(!keys["Hyper"]) ast.hyperLatch = false;
+
+    // Fire — also edge-triggered, max 4 simultaneous bullets.
+    if(keys["Space"] && !ast.fireLatch && ast.bullets.length < 4){
+      ast.fireLatch = true;
+      ast.bullets.push({
+        x: s.x + Math.cos(s.angle)*8,
+        y: s.y + Math.sin(s.angle)*8,
+        vx: Math.cos(s.angle)*5 + s.vx*0.4,
+        vy: Math.sin(s.angle)*5 + s.vy*0.4,
+        life: 55,
+        ufo: false,
+      });
+      beep(880, 0.05, "square", 0.05);
+    }
+    if(!keys["Space"]) ast.fireLatch = false;
+
+    // Move + wrap
+    s.x += s.vx;
+    s.y += s.vy;
+    wrapPos(s);
+  } else if(state.mode === "dying"){
+    // Drift the wreck a little so the explosion feels real.
+    s.x += s.vx * 0.5;
+    s.y += s.vy * 0.5;
+    wrapPos(s);
+  }
+
+  // ----- Bullets (player AND UFO share the array) -----
+  for(let i=ast.bullets.length-1; i>=0; i--){
+    const b = ast.bullets[i];
+    b.x += b.vx; b.y += b.vy;
+    wrapPos(b);
+    b.life--;
+    if(b.life <= 0){ ast.bullets.splice(i,1); continue; }
+
+    // Bullet vs asteroid (both player and UFO bullets can break rocks)
+    let consumed = false;
+    for(let j=ast.asteroids.length-1; j>=0; j--){
+      const a = ast.asteroids[j];
+      if(Math.hypot(b.x - a.x, b.y - a.y) < asteroidRadius(a.size)){
+        if(!b.ufo){
+          state.score += a.size === 3 ? 20 : a.size === 2 ? 50 : 100;
+        }
+        spawnParticles(a.x, a.y, 12, 1.6);
+        beep(160 + (3-a.size)*60, 0.1, "sawtooth", 0.06);
+        if(a.size > 1){
+          for(let k=0;k<2;k++){
+            const child = spawnAsteroid(a.x, a.y, a.size-1);
+            child.vx += a.vx * 0.35;
+            child.vy += a.vy * 0.35;
+            ast.asteroids.push(child);
+          }
+        }
+        ast.asteroids.splice(j,1);
+        ast.bullets.splice(i,1);
+        consumed = true;
+        break;
+      }
+    }
+    if(consumed) continue;
+
+    // Player bullet vs UFO
+    if(!b.ufo && ast.ufo){
+      const ur = ast.ufo.size === 1 ? 9 : 6;
+      if(Math.hypot(b.x - ast.ufo.x, b.y - ast.ufo.y) < ur){
+        state.score += ast.ufo.size === 1 ? 200 : 1000;
+        spawnParticles(ast.ufo.x, ast.ufo.y, 18, 2.2);
+        beep(110, 0.32, "sawtooth", 0.08);
+        ast.ufo = null;
+        ast.ufoCD = 500 + Math.floor(Math.random()*600);
+        ast.bullets.splice(i,1);
+        continue;
+      }
+    }
+
+    // UFO bullet vs ship
+    if(b.ufo && s.alive && s.invulnT === 0 && s.hyperT === 0 && state.mode === "play"){
+      if(Math.hypot(b.x - s.x, b.y - s.y) < 5){
+        ast.bullets.splice(i,1);
+        killShip();
+        continue;
+      }
+    }
+  }
+
+  // ----- Asteroids drift + ship collision -----
+  for(const a of ast.asteroids){
+    a.x += a.vx; a.y += a.vy; a.rot += a.spin;
+    wrapPos(a);
+    if(s.alive && s.invulnT === 0 && s.hyperT === 0 && state.mode === "play"){
+      if(Math.hypot(s.x - a.x, s.y - a.y) < asteroidRadius(a.size) + 4){
+        killShip();
+        // Also shatter the rock that hit you, for the satisfying mutual-kill.
+        spawnParticles(a.x, a.y, 14, 1.8);
+        if(a.size > 1){
+          for(let k=0;k<2;k++){
+            const child = spawnAsteroid(a.x, a.y, a.size-1);
+            ast.asteroids.push(child);
+          }
+        }
+        const idx = ast.asteroids.indexOf(a);
+        if(idx >= 0) ast.asteroids.splice(idx, 1);
+        break;
+      }
+    }
+  }
+
+  // ----- UFO -----
+  if(state.mode === "play"){
+    if(!ast.ufo){
+      ast.ufoCD--;
+      if(ast.ufoCD <= 0){
+        const fromLeft = Math.random() < 0.5;
+        // Score gates the appearance of the dangerous small UFO, just like
+        // the original cabinet: it gets meaner the better you're doing.
+        const small = state.score > 4000 && Math.random() < 0.5;
+        ast.ufo = {
+          x: fromLeft ? -10 : W + 10,
+          y: 30 + Math.random() * (H - 80),
+          vx: (fromLeft ? 1 : -1) * (small ? 1.4 : 1.0),
+          size: small ? 2 : 1,
+          shootCD: 60,
+          waver: 0,
+        };
+      }
+    } else {
+      const u = ast.ufo;
+      u.waver += 0.06;
+      u.x += u.vx;
+      u.y += Math.sin(u.waver) * 0.5;
+      // Two-tone siren — alternates pitch every ~24 frames while UFO is on screen.
+      ast.ufoSirenPhase = (ast.ufoSirenPhase + 1) % 48;
+      if(ast.ufoSirenPhase === 0)  beep(u.size === 1 ? 220 : 320, 0.08, "square", 0.04);
+      if(ast.ufoSirenPhase === 24) beep(u.size === 1 ? 180 : 260, 0.08, "square", 0.04);
+      if(u.x < -16 || u.x > W + 16){
+        ast.ufo = null;
+        ast.ufoCD = 500 + Math.floor(Math.random()*600);
+      } else {
+        u.shootCD--;
+        if(u.shootCD <= 0){
+          const dx = s.x - u.x, dy = s.y - u.y;
+          let aim;
+          if(u.size === 1){
+            aim = Math.random() * Math.PI*2;            // big saucer fires wildly
+          } else {
+            aim = Math.atan2(dy, dx) + (Math.random()-0.5) * 0.18; // small saucer hunts
+          }
+          const sp = 3.4;
+          ast.bullets.push({
+            x: u.x, y: u.y,
+            vx: Math.cos(aim)*sp,
+            vy: Math.sin(aim)*sp,
+            life: 70,
+            ufo: true,
+          });
+          beep(420, 0.05, "square", 0.05);
+          u.shootCD = 55 + Math.floor(Math.random()*65);
+        }
+      }
+    }
+  }
+
+  // ----- Particles -----
+  for(let i=ast.particles.length-1; i>=0; i--){
+    const p = ast.particles[i];
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.985; p.vy *= 0.985;
+    p.life--;
+    if(p.life <= 0) ast.particles.splice(i,1);
+  }
+
+  // ----- Win wave: all rocks cleared → back to invaders -----
+  if(state.mode === "play" && ast.asteroids.length === 0){
+    transitionTo("invaders");
+  }
+}
+
+function renderAsteroids(){
+  g.save();
+  g.strokeStyle = C_WHITE;
+  g.fillStyle = C_WHITE;
+  g.lineWidth = 1;
+
+  // Asteroids — irregular polygons
+  for(const a of ast.asteroids){
+    const r = asteroidRadius(a.size);
+    g.beginPath();
+    for(let i=0;i<a.shape.length;i++){
+      const v = a.shape[i];
+      const x = a.x + Math.cos(v.a + a.rot) * r * v.r;
+      const y = a.y + Math.sin(v.a + a.rot) * r * v.r;
+      if(i===0) g.moveTo(x,y); else g.lineTo(x,y);
+    }
+    g.closePath();
+    g.stroke();
+  }
+
+  // Ship — hidden during hyperspace, blinks while invulnerable
+  const s = ast.ship;
+  if(state.mode === "dying" || (s.alive && s.hyperT === 0)){
+    const hide = (state.mode === "play" && s.invulnT > 0 && (Math.floor(frame/4) % 2 === 0));
+    if(state.mode !== "dying" && !hide){
+      g.save();
+      g.translate(s.x, s.y);
+      g.rotate(s.angle);
+      g.beginPath();
+      g.moveTo(8, 0);
+      g.lineTo(-6, 5);
+      g.lineTo(-3, 0);
+      g.lineTo(-6, -5);
+      g.closePath();
+      g.stroke();
+      // Thrust flame — flickers
+      if(s.thrusting && Math.floor(frame/3)%2===0){
+        g.beginPath();
+        g.moveTo(-3, 0);
+        g.lineTo(-9, 3);
+        g.lineTo(-6, 0);
+        g.lineTo(-9, -3);
+        g.closePath();
+        g.stroke();
+      }
+      g.restore();
+    }
+  }
+
+  // Bullets
+  for(const b of ast.bullets){
+    g.fillRect(Math.round(b.x), Math.round(b.y), 2, 2);
+  }
+
+  // UFO — dome + body + belly stripe
+  if(ast.ufo){
+    const u = ast.ufo;
+    const sc = u.size === 1 ? 1 : 0.65;
+    g.save();
+    g.translate(u.x, u.y);
+    g.scale(sc, sc);
+    g.beginPath();
+    g.moveTo(-8, 0); g.lineTo(-4, -3); g.lineTo(4, -3); g.lineTo(8, 0);
+    g.lineTo(4, 3);  g.lineTo(-4, 3); g.closePath();
+    g.stroke();
+    g.beginPath();
+    g.moveTo(-4, -3); g.lineTo(-2, -5); g.lineTo(2, -5); g.lineTo(4, -3);
+    g.stroke();
+    g.beginPath();
+    g.moveTo(-8, 0); g.lineTo(8, 0);
+    g.stroke();
+    g.restore();
+  }
+
+  // Particles
+  for(const p of ast.particles){
+    g.fillRect(Math.round(p.x), Math.round(p.y), 1, 1);
+  }
+  g.restore();
+}
+
+// ---------- Inter-game transitions ----------
+function transitionTo(target){
+  state.mode = "transition";
+  state.transitionT = 90;     // ~1.5s
+  state.transitionTo = target;
+  if(target === "asteroids"){
+    state.transitionLabel = "STAGE " + state.level + "  ASTEROIDS";
+  } else {
+    // Returning to invaders bumps the round counter.
+    state.transitionLabel = "WAVE " + (state.level + 1) + "  INVADERS";
+  }
+  // Clear any in-flight projectiles so the screen is calm.
+  state.bullet = null;
+  state.enemyBullets.length = 0;
+  ast.bullets.length = 0;
+  ast.particles.length = 0;
+  beep(440, 0.15, "square", 0.06);
+  setTimeout(()=>beep(660, 0.15, "square", 0.06), 150);
+  setTimeout(()=>beep(880, 0.2,  "square", 0.06), 300);
+}
+
+function finishTransition(){
+  if(state.transitionTo === "asteroids"){
+    state.gameType = "asteroids";
+    buildAsteroidsLevel();
+    state.mode = "play";
+  } else {
+    state.gameType = "invaders";
+    state.level++;
+    state.bullet = null;
+    state.enemyBullets = [];
+    state.ufo = null;
+    state.ufoCD = 1500;
+    state.bottomReached = false;
+    buildBunkers();
+    buildFleet(state.level);
+    state.mode = "play";
+  }
 }
 
 // ---------- Game flow ----------
 function startGame(){
   state.mode = "play";
+  state.gameType = "invaders";
   state.score = 0;
   state.lives = 3;
   state.level = 1;
   state.player.x = 20;
   state.player.alive = true;
   state.player.deadT = 0;
+  state.player.invulnT = 0;
   state.bullet = null;
   state.enemyBullets = [];
   state.explosions = [];
@@ -452,16 +928,11 @@ function startGame(){
   state.bottomReached = false;
   state.restartArmed = false;
   state.gameoverT = 0;
-  buildBunkers();
-  buildFleet(state.level);
-}
-
-function nextWave(){
-  state.level++;
-  state.bullet = null;
-  state.enemyBullets = [];
-  state.ufo = null;
-  state.ufoCD = 1500;
+  // Reset asteroids state too so a previous run doesn't bleed through.
+  ast.asteroids = [];
+  ast.bullets = [];
+  ast.particles = [];
+  ast.ufo = null;
   buildBunkers();
   buildFleet(state.level);
 }
@@ -509,8 +980,45 @@ function bulletHitsBunker(bk, bx, by, w, h, fromBelow){
 let frame = 0;
 function update(){
   frame++;
+
+  // Inter-game transitions hold play steady for ~1.5s with on-screen text.
+  if(state.mode === "transition"){
+    state.transitionT--;
+    if(state.transitionT <= 0) finishTransition();
+    return;
+  }
+
   if(state.mode !== "play" && state.mode !== "dying") return;
 
+  // Dispatch to the active game's update — most code below is invaders-only.
+  if(state.gameType === "asteroids"){
+    updateAsteroids();
+    // Asteroids has its own dying handling at the bottom of this function so
+    // transitions to gameover stay consistent across both games.
+    if(state.mode === "dying"){
+      ast.ship.deadT--;
+      if(ast.ship.deadT <= 0){
+        if(state.lives <= 0){
+          saveHi();
+          state.mode = "gameover";
+          state.gameoverT = 0;
+          state.restartArmed = false;
+        } else if(safeToRespawn()){
+          ast.ship.alive = true;
+          ast.ship.x = W/2; ast.ship.y = H/2;
+          ast.ship.vx = 0; ast.ship.vy = 0;
+          ast.ship.angle = -Math.PI/2;
+          ast.ship.invulnT = 120;
+          state.mode = "play";
+        } else {
+          ast.ship.deadT = 1;   // hold one more frame and recheck next tick
+        }
+      }
+    }
+    return;
+  }
+
+  // ===== Invaders update path =====
   // ----- Player -----
   const p = state.player;
   if(state.mode === "play" && p.alive){
@@ -750,9 +1258,9 @@ function update(){
     }
   }
 
-  // ----- Win wave -----
+  // ----- Win wave: clearing invaders pivots into Asteroids -----
   if(state.mode === "play" && aliveCount() === 0){
-    nextWave();
+    transitionTo("asteroids");
   }
 }
 
@@ -915,59 +1423,90 @@ function render(){
     drawText("INSERT COIN", 76, 232, C_WHITE);
   }
 
-  if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover"){
-    // Enemies
-    for(const e of state.enemies){
-      if(!e.alive) continue;
-      const f = state.enemyAnim;
-      const sp = sprites[e.type][f];
-      drawSprite(sp, e.x, e.y);
+  if(state.mode === "transition"){
+    // Brief stage banner between games — fades the label and shows the next stage.
+    const t = state.transitionT;
+    const blink = Math.floor(frame/8) % 2 === 0;
+    drawText(state.transitionLabel, W/2 - state.transitionLabel.length*3, H/2 - 4, blink ? C_GREEN : C_WHITE);
+    if(t < 60){
+      drawText("GET READY", W/2 - 27, H/2 + 10, C_WHITE);
     }
-    // Bunkers
-    for(const bk of state.bunkers){
-      g.fillStyle = C_GREEN;
-      for(let y=0;y<bk.h;y++){
-        for(let x=0;x<bk.w;x++){
-          if(bk.grid[y][x]) g.fillRect(bk.x + x, bk.y + y, 1, 1);
+  }
+
+  if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover" || state.mode === "transition"){
+    if(state.gameType === "invaders"){
+      // Enemies
+      for(const e of state.enemies){
+        if(!e.alive) continue;
+        const f = state.enemyAnim;
+        const sp = sprites[e.type][f];
+        drawSprite(sp, e.x, e.y);
+      }
+      // Bunkers
+      for(const bk of state.bunkers){
+        g.fillStyle = C_GREEN;
+        for(let y=0;y<bk.h;y++){
+          for(let x=0;x<bk.w;x++){
+            if(bk.grid[y][x]) g.fillRect(bk.x + x, bk.y + y, 1, 1);
+          }
         }
       }
-    }
-    // UFO
-    if(state.ufo){
-      drawSprite(sprites.ufo, state.ufo.x, state.ufo.y);
-    }
-    // Player — blink while invulnerable after respawn so the safety window
-    // is visible (every other frame is hidden).
-    if(state.mode === "dying"){
-      drawSprite(state.player.anim ? sprites.pex1 : sprites.pex2, state.player.x, state.player.y);
-    } else if(state.player.alive){
-      const hide = state.player.invulnT > 0 && (Math.floor(frame/4) % 2 === 0);
-      if(!hide) drawSprite(sprites.player, state.player.x, state.player.y);
-    }
-    // Player bullet
-    if(state.bullet){
-      g.fillStyle = "#ffffff";
-      g.fillRect(state.bullet.x, state.bullet.y, 1, 4);
-    }
-    // Enemy bullets
-    for(const eb of state.enemyBullets) drawEnemyBullet(eb);
-    // Explosions
-    for(const ex of state.explosions){
-      const sp = sprites[ex.sprite] || sprites.ex_w;
-      drawSprite(sp, ex.x, ex.y);
-      if(ex.text){
-        drawText(ex.text, ex.x - 2, ex.y - 8, C_RED);
+      // UFO
+      if(state.ufo){
+        drawSprite(sprites.ufo, state.ufo.x, state.ufo.y);
       }
+      // Player — blink while invulnerable after respawn so the safety window
+      // is visible (every other frame is hidden).
+      if(state.mode === "dying"){
+        drawSprite(state.player.anim ? sprites.pex1 : sprites.pex2, state.player.x, state.player.y);
+      } else if(state.player.alive){
+        const hide = state.player.invulnT > 0 && (Math.floor(frame/4) % 2 === 0);
+        if(!hide) drawSprite(sprites.player, state.player.x, state.player.y);
+      }
+      // Player bullet
+      if(state.bullet){
+        g.fillStyle = "#ffffff";
+        g.fillRect(state.bullet.x, state.bullet.y, 1, 4);
+      }
+      // Enemy bullets
+      for(const eb of state.enemyBullets) drawEnemyBullet(eb);
+      // Explosions
+      for(const ex of state.explosions){
+        const sp = sprites[ex.sprite] || sprites.ex_w;
+        drawSprite(sp, ex.x, ex.y);
+        if(ex.text){
+          drawText(ex.text, ex.x - 2, ex.y - 8, C_RED);
+        }
+      }
+      // Ground line (green)
+      g.fillStyle = C_GREEN;
+      g.fillRect(0, H-12, W, 1);
+    } else {
+      // Asteroids
+      renderAsteroids();
     }
-    // Ground line (green)
-    g.fillStyle = C_GREEN;
-    g.fillRect(0, H-12, W, 1);
 
-    // Lives display: digit + one ship icon per remaining life so the count
-    // is unambiguous at a glance.
+    // Lives display (shared HUD) — uses a small ship glyph per remaining life.
     drawText(String(Math.max(0,state.lives)), 8, H-9, C_WHITE);
     for(let i=0;i<Math.max(0,state.lives);i++){
-      drawSprite(sprites.player, 24 + i*16, H-10);
+      if(state.gameType === "invaders"){
+        drawSprite(sprites.player, 24 + i*16, H-10);
+      } else {
+        // Tiny vector ship icon for the asteroids stage.
+        g.save();
+        g.strokeStyle = C_WHITE;
+        g.lineWidth = 1;
+        g.translate(24 + i*12, H-7);
+        g.rotate(-Math.PI/2);
+        g.beginPath();
+        g.moveTo(4, 0);
+        g.lineTo(-3, 3);
+        g.lineTo(-1, 0);
+        g.lineTo(-3, -3);
+        g.closePath();
+        g.stroke();
+        g.restore();
+      }
     }
     drawText("CREDIT 01", W-60, H-9, C_WHITE);
 
