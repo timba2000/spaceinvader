@@ -350,7 +350,7 @@ const state = {
   hi: parseInt(safeStore.get("si_hi","0"),10) || 0,
   lives: 3,
   level: 1,
-  player: { x: 20, y: H-24, w: 13, h: 7, alive:true, deadT: 0, anim:0 },
+  player: { x: 20, y: H-24, w: 13, h: 7, alive:true, deadT: 0, anim:0, invulnT: 0 },
   bullet: null,        // {x,y}
   enemies: [],         // {x,y,type,alive,row,col}
   enemyDir: 1,
@@ -514,6 +514,7 @@ function update(){
   // ----- Player -----
   const p = state.player;
   if(state.mode === "play" && p.alive){
+    if(p.invulnT > 0) p.invulnT--;
     if(keys["ArrowLeft"])  p.x -= 1.2;
     if(keys["ArrowRight"]) p.x += 1.2;
     if(p.x < 8) p.x = 8;
@@ -596,12 +597,10 @@ function update(){
 
       // Check if reached player line / bunkers — instant game over (faithful
       // to the arcade): invaders touching ground ends the game regardless of
-      // remaining lives.
+      // remaining lives. The bottomReached flag forces the dying-end check
+      // straight to gameover even with lives in reserve.
       if(maxY + dy >= state.player.y - 2){
         state.bottomReached = true;
-        // Drain remaining lives so the dying-end check goes straight to
-        // game over instead of respawning into an already-lost field.
-        state.lives = 1;
         killPlayer();
       }
       // Enemies eating bunkers as they descend
@@ -652,18 +651,23 @@ function update(){
     eb.y += 1.6;
     eb.frame++;
   }
-  // Cull / collide enemy bullets
+  // Cull / collide enemy bullets. Bullets carry a fractional y for smooth
+  // motion, but ALL collision and grid-index work uses integer-floored
+  // coordinates — otherwise bk.grid[fractional][...] returns undefined and
+  // bullets phase through bunkers (the original "random kill" glitch).
   for(let i=state.enemyBullets.length-1; i>=0; i--){
     const eb = state.enemyBullets[i];
+    const ix = Math.round(eb.x);
+    const iy = Math.floor(eb.y);
     let removed = false;
-    if(eb.y > H - 16){
+    if(iy > H - 16){
       state.enemyBullets.splice(i,1);
       continue;
     }
     // bunker collision
     for(const bk of state.bunkers){
-      if(eb.x >= bk.x && eb.x < bk.x + bk.w && eb.y >= bk.y && eb.y < bk.y + bk.h){
-        if(bulletHitsBunker(bk, eb.x, eb.y, 1, 4, true)){
+      if(ix >= bk.x && ix < bk.x + bk.w && iy >= bk.y && iy < bk.y + bk.h){
+        if(bulletHitsBunker(bk, ix, iy, 1, 4, true)){
           state.enemyBullets.splice(i,1);
           removed = true;
           break;
@@ -674,7 +678,7 @@ function update(){
     // collision with player bullet (canceling)
     if(state.bullet){
       const pb = state.bullet;
-      if(Math.abs(pb.x - eb.x) <= 1 && Math.abs(pb.y - eb.y) <= 6){
+      if(Math.abs(pb.x - ix) <= 1 && Math.abs(pb.y - iy) <= 6){
         state.bullet = null;
         if(Math.random() < 0.5){
           state.enemyBullets.splice(i,1);
@@ -683,10 +687,10 @@ function update(){
       }
     }
     if(removed) continue;
-    // collision with player
-    if(state.player.alive && state.mode === "play"){
+    // collision with player (skipped during respawn invulnerability)
+    if(state.player.alive && state.mode === "play" && state.player.invulnT <= 0){
       const pr = {x:state.player.x, y:state.player.y, w:state.player.w, h:state.player.h};
-      const br = {x:eb.x-1, y:eb.y, w:2, h:6};
+      const br = {x:ix-1, y:iy, w:2, h:6};
       if(rectsHit(pr, br)){
         state.enemyBullets.splice(i,1);
         killPlayer();
@@ -738,6 +742,9 @@ function update(){
       } else {
         state.player.alive = true;
         state.player.x = 20;
+        state.player.invulnT = 90;       // 1.5 s of safety so a bullet
+                                          // already in flight can't insta-kill
+        state.enemyBullets.length = 0;   // clear the screen of bullets too
         state.mode = "play";
       }
     }
@@ -751,10 +758,12 @@ function update(){
 
 function killPlayer(){
   if(!state.player.alive) return;
+  if(state.player.invulnT > 0) return;   // can't die during respawn invuln
   state.player.alive = false;
   state.player.deadT = 90;
   state.lives--;
   state.mode = "dying";
+  state.bullet = null;                    // cancel any in-flight player shot
   noise(0.5, 0.12);
 }
 
@@ -840,10 +849,13 @@ const FONT = {
 };
 
 function drawEnemyBullet(eb){
-  // Three bullet shapes with simple animated frames
+  // Three bullet shapes with simple animated frames. Coordinates are floored
+  // so each draw lands on an exact pixel — fractional fillRect coords would
+  // anti-alias and produce the "smeared bullet" glitch.
   g.fillStyle = "#ffffff";
   const f = Math.floor(eb.frame/4) % 4;
-  const px = (x,y) => g.fillRect(eb.x + x, eb.y + y, 1, 1);
+  const bx = Math.round(eb.x), by = Math.floor(eb.y);
+  const px = (x,y) => g.fillRect(bx + x, by + y, 1, 1);
   if(eb.kind === "plunger"){
     // straight rod + alternating tail
     for(let i=0;i<6;i++) px(0, i);
@@ -856,7 +868,7 @@ function drawEnemyBullet(eb){
     ][f%2];
     for(let y=0;y<shape.length;y++){
       for(let x=0;x<shape[y].length;x++){
-        if(shape[y][x] === '×') g.fillRect(eb.x + x - 1, eb.y + y, 1, 1);
+        if(shape[y][x] === '×') g.fillRect(bx + x - 1, by + y, 1, 1);
       }
     }
   } else { // rolling
@@ -866,7 +878,7 @@ function drawEnemyBullet(eb){
     ][f%2];
     for(let y=0;y<shape.length;y++){
       for(let x=0;x<shape[y].length;x++){
-        if(shape[y][x] === '×') g.fillRect(eb.x + x - 1, eb.y + y, 1, 1);
+        if(shape[y][x] === '×') g.fillRect(bx + x - 1, by + y, 1, 1);
       }
     }
   }
@@ -924,11 +936,13 @@ function render(){
     if(state.ufo){
       drawSprite(sprites.ufo, state.ufo.x, state.ufo.y);
     }
-    // Player
+    // Player — blink while invulnerable after respawn so the safety window
+    // is visible (every other frame is hidden).
     if(state.mode === "dying"){
       drawSprite(state.player.anim ? sprites.pex1 : sprites.pex2, state.player.x, state.player.y);
     } else if(state.player.alive){
-      drawSprite(sprites.player, state.player.x, state.player.y);
+      const hide = state.player.invulnT > 0 && (Math.floor(frame/4) % 2 === 0);
+      if(!hide) drawSprite(sprites.player, state.player.x, state.player.y);
     }
     // Player bullet
     if(state.bullet){
