@@ -2096,9 +2096,11 @@ function updateDonkeyKong(){
       b.x += b.dir * 1.4;
       b.y = DK_GIRDERS[b.girder].y - DK_BH;
       const gr = DK_GIRDERS[b.girder];
-      if(b.dir > 0 && b.x > gr.x2){
+      if(b.dir > 0 && b.x + DK_BW >= gr.x2){
+        b.x = gr.x2 - DK_BW;  // clamp so x stays within lower girder ranges
         b.girder = -1; b.vy = 0.5;
-      } else if(b.dir < 0 && b.x + DK_BW < gr.x1){
+      } else if(b.dir < 0 && b.x <= gr.x1){
+        b.x = gr.x1;           // clamp to left edge
         b.girder = -1; b.vy = 0.5;
       }
     } else {
