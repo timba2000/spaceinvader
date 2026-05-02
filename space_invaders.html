@@ -471,6 +471,47 @@ const PAC_MODE_PLAN = [
   [5*60, Infinity],
 ];
 
+// ---------- Frogger state ----------
+const FROG_TILE = 16;
+const FROG_COLS = 14;       // 14 * 16 = 224 (full canvas width)
+const FROG_ROWS = 13;       // visible playfield rows
+const FROG_OFFSET_Y = 24;   // top edge of playfield (below score HUD)
+const FROG_HOME_COLS = [0, 3, 6, 9, 12]; // 5 slots across the top row
+
+// Lane definitions (row 0 = homes, 1-5 = river, 6 = median, 7-11 = road, 12 = start strip).
+// dir: +1 right, -1 left. speed: px/frame. len: tiles. spacing: tiles between entities.
+const FROG_LANES = [
+  null,
+  {kind:"log",   dir: 1, speed:0.35, len:3, spacing:5},
+  {kind:"turt",  dir:-1, speed:0.45, len:3, spacing:5, dive:true},
+  {kind:"log",   dir: 1, speed:0.30, len:4, spacing:6},
+  {kind:"log",   dir:-1, speed:0.55, len:2, spacing:4},
+  {kind:"turt",  dir: 1, speed:0.40, len:2, spacing:5, dive:true},
+  null,
+  {kind:"car",   dir: 1, speed:0.45, len:1, spacing:5, color:"#ffff44"},
+  {kind:"car",   dir:-1, speed:0.65, len:1, spacing:4, color:"#44ddff"},
+  {kind:"car",   dir: 1, speed:0.95, len:1, spacing:6, color:"#ff44ff"},
+  {kind:"truck", dir:-1, speed:0.40, len:2, spacing:5, color:"#ff8844"},
+  {kind:"car",   dir: 1, speed:0.55, len:1, spacing:4, color:"#ff4444"},
+  null,
+];
+
+const frog = {
+  x: 0, y: 0,
+  alive: true,
+  deadT: 0,           // dying countdown
+  invulnT: 0,         // brief invulnerability after spawn / homing
+  dir: 0,             // 0=up, 1=right, 2=down, 3=left
+  hopT: 0,            // visual hop animation timer
+  hopCD: 0,           // movement cooldown so a held key doesn't blast across the screen
+  riding: null,       // log/turtle entity currently being ridden, or null
+  homes: [false,false,false,false,false],
+  lanes: [],          // populated by initFrogger — each entry is null or {def, entities}
+  timer: 0,           // ticks of round time remaining
+  highestRow: 12,     // for forward-progress points
+  splat: false,       // visual: did we die from car (splat) vs water (sink)
+};
+
 // ---------- Bunkers ----------
 // Original bunker shape: 22 wide, 16 tall, with arched cutout at bottom.
 const BUNKER_SHAPE = [
@@ -1457,9 +1498,9 @@ function updatePacman(){
     }
   }
 
-  // Win: all dots gone → harder Invaders wave.
+  // Win: all dots gone → on to Frogger (the 4th stage).
   if(state.mode === "play" && pac.dotsRemaining === 0){
-    transitionTo("invaders");
+    transitionTo("frogger");
   }
 }
 
@@ -1581,6 +1622,378 @@ function renderPacman(){
   g.restore();
 }
 
+// ---------- Frogger ----------
+function initFrogger(){
+  frog.x = (FROG_COLS/2 - 0.5) * FROG_TILE;
+  frog.y = 12 * FROG_TILE + FROG_OFFSET_Y;
+  frog.alive = true;
+  frog.deadT = 0;
+  frog.invulnT = 60;
+  frog.dir = 0;
+  frog.hopT = 0;
+  frog.hopCD = 0;
+  frog.riding = null;
+  frog.homes = [false,false,false,false,false];
+  frog.timer = 60 * 60;     // ~60 seconds at 60 Hz
+  frog.highestRow = 12;
+  frog.splat = false;
+  frog.lanes = [];
+  // Build each lane's entity list, evenly spaced and pre-offset so the screen
+  // doesn't start with all entities aligned.
+  for(let r=0;r<FROG_ROWS;r++){
+    const def = FROG_LANES[r];
+    if(!def){ frog.lanes.push(null); continue; }
+    const entities = [];
+    const stride = (def.len + def.spacing) * FROG_TILE;
+    let x = -def.spacing * FROG_TILE * Math.random();
+    while(x < FROG_COLS * FROG_TILE){
+      entities.push({
+        x, y: r*FROG_TILE + FROG_OFFSET_Y,
+        w: def.len * FROG_TILE, h: FROG_TILE,
+        kind: def.kind, color: def.color || null,
+        diveT: def.dive ? Math.floor(Math.random()*240) : 0,
+      });
+      x += stride;
+    }
+    frog.lanes.push({def, entities, stride: entities.length * stride});
+  }
+}
+
+function froggerKill(splat){
+  if(!frog.alive) return;
+  if(frog.invulnT > 0) return;
+  frog.alive = false;
+  frog.deadT = 60;
+  frog.splat = !!splat;
+  state.lives--;
+  state.mode = "dying";
+  noise(0.35, 0.12);
+}
+
+function froggerRespawn(){
+  frog.x = (FROG_COLS/2 - 0.5) * FROG_TILE;
+  frog.y = 12 * FROG_TILE + FROG_OFFSET_Y;
+  frog.alive = true;
+  frog.dir = 0;
+  frog.hopT = 0;
+  frog.hopCD = 0;
+  frog.riding = null;
+  frog.invulnT = 60;
+  frog.highestRow = 12;
+  frog.timer = 60 * 60;
+  frog.splat = false;
+}
+
+function froggerHomeReached(){
+  // All 5 homes filled — clear stage and cycle back to invaders.
+  state.score += 200;
+  beep(1200, 0.1, "square", 0.07);
+  setTimeout(()=>beep(1600, 0.1, "square", 0.07), 100);
+  setTimeout(()=>beep(2000, 0.15, "square", 0.07), 200);
+  transitionTo("invaders");
+}
+
+function updateFrogger(){
+  // Advance lane entities every tick (also during dying so the world keeps
+  // moving — feels more alive and matches the arcade).
+  for(let r=0;r<FROG_ROWS;r++){
+    const lane = frog.lanes[r];
+    if(!lane) continue;
+    const def = lane.def;
+    for(const e of lane.entities){
+      e.x += def.dir * def.speed;
+      // Wrap around: when an entity drifts off one side, place it back on
+      // the opposite side with the lane's stride distance.
+      if(def.dir > 0 && e.x > FROG_COLS * FROG_TILE) e.x -= lane.stride;
+      else if(def.dir < 0 && e.x + e.w < 0)         e.x += lane.stride;
+      if(def.dive) e.diveT = (e.diveT + 1) % 240;
+    }
+  }
+
+  // Dying handling — same shape as Pac-Man / Asteroids.
+  if(state.mode === "dying"){
+    frog.deadT--;
+    if(frog.deadT <= 0){
+      if(state.lives <= 0){
+        saveHi();
+        state.mode = "gameover";
+        state.gameoverT = 0;
+        state.restartArmed = false;
+      } else {
+        froggerRespawn();
+        state.mode = "play";
+      }
+    }
+    return;
+  }
+  if(state.mode !== "play") return;
+
+  if(frog.invulnT > 0) frog.invulnT--;
+  if(frog.hopT > 0)    frog.hopT--;
+  if(frog.hopCD > 0)   frog.hopCD--;
+
+  // Movement: one tile per press, with a short cooldown so a held key
+  // doesn't rocket the frog across the screen. Auto-repeat is already
+  // suppressed in onKeyDown so each tap registers cleanly.
+  if(frog.hopCD <= 0){
+    let moved = false;
+    if(keys["ArrowUp"])         { frog.y -= FROG_TILE; frog.dir = 0; moved = true; }
+    else if(keys["ArrowDown"])  { frog.y += FROG_TILE; frog.dir = 2; moved = true; }
+    else if(keys["ArrowLeft"])  { frog.x -= FROG_TILE; frog.dir = 3; moved = true; }
+    else if(keys["ArrowRight"]) { frog.x += FROG_TILE; frog.dir = 1; moved = true; }
+    if(moved){
+      frog.hopT = 8;
+      frog.hopCD = 12;
+      frog.riding = null;
+      beep(700, 0.04, "square", 0.04);
+      const r = Math.floor((frog.y - FROG_OFFSET_Y) / FROG_TILE);
+      if(r < frog.highestRow){
+        state.score += 10;
+        frog.highestRow = r;
+      }
+    }
+  }
+
+  // Clamp horizontal bounds (vertical clamp happens after home check).
+  if(frog.x < 0) frog.x = 0;
+  if(frog.x > (FROG_COLS-1) * FROG_TILE) frog.x = (FROG_COLS-1) * FROG_TILE;
+  if(frog.y > 12*FROG_TILE + FROG_OFFSET_Y) frog.y = 12*FROG_TILE + FROG_OFFSET_Y;
+  if(frog.y < FROG_OFFSET_Y) frog.y = FROG_OFFSET_Y;
+
+  const row = Math.floor((frog.y - FROG_OFFSET_Y) / FROG_TILE);
+
+  if(row === 0){
+    // Home row — must land in an unfilled slot.
+    const fc = Math.round(frog.x / FROG_TILE);
+    const homeIdx = FROG_HOME_COLS.indexOf(fc);
+    if(homeIdx >= 0 && !frog.homes[homeIdx]){
+      frog.homes[homeIdx] = true;
+      state.score += 50 + Math.floor(frog.timer / 60) * 10; // time bonus
+      beep(800, 0.08, "square", 0.06);
+      setTimeout(()=>beep(1200, 0.1, "square", 0.06), 80);
+      // Reset frog to start, keep filled homes.
+      froggerRespawn();
+      // If all 5 homes are filled the stage is cleared.
+      if(frog.homes.every(h => h)) froggerHomeReached();
+      return;
+    } else {
+      // Hit a tree or already-filled slot
+      froggerKill(true);
+      return;
+    }
+  }
+
+  if(row >= 1 && row <= 5){
+    // River row: must be on a log or non-diving turtle.
+    const lane = frog.lanes[row];
+    const fcx = frog.x + FROG_TILE/2;
+    let onSomething = null;
+    for(const e of lane.entities){
+      if(fcx >= e.x && fcx < e.x + e.w){
+        const isDiving = lane.def.dive && e.diveT > 180;
+        if(!isDiving){ onSomething = e; break; }
+      }
+    }
+    if(!onSomething){
+      froggerKill(false); // sink
+      return;
+    }
+    frog.riding = onSomething;
+    // Drift with the entity.
+    frog.x += lane.def.dir * lane.def.speed;
+    // Riding off the edge of the playfield = death.
+    if(frog.x < -FROG_TILE/2 || frog.x + FROG_TILE/2 > FROG_COLS * FROG_TILE){
+      froggerKill(false);
+      return;
+    }
+  } else if(row >= 7 && row <= 11){
+    // Road row — collide with cars.
+    const lane = frog.lanes[row];
+    const fr = {x: frog.x + 2, y: frog.y + 2, w: FROG_TILE - 4, h: FROG_TILE - 4};
+    for(const e of lane.entities){
+      if(rectsHit(fr, e)){ froggerKill(true); return; }
+    }
+    frog.riding = null;
+  } else {
+    // Median or starting strip — safe.
+    frog.riding = null;
+  }
+
+  // Round timer
+  frog.timer--;
+  if(frog.timer <= 0) froggerKill(false);
+}
+
+function drawFrogSprite(x, y, dir, color, hopping){
+  // Pixel-art frog drawn into a 16x16 cell, then rotated by direction.
+  g.save();
+  g.translate(x + FROG_TILE/2, y + FROG_TILE/2);
+  g.rotate(dir * Math.PI/2);
+  g.translate(-FROG_TILE/2, -FROG_TILE/2);
+  g.fillStyle = color;
+  // Body
+  g.fillRect(4, 6, 8, 6);
+  g.fillRect(5, 5, 6, 1);
+  g.fillRect(5, 12, 6, 1);
+  // Eyes (a bit forward)
+  g.fillRect(3, 3, 3, 3);
+  g.fillRect(10, 3, 3, 3);
+  // Pupils
+  g.fillStyle = "#000";
+  g.fillRect(4, 4, 1, 1);
+  g.fillRect(11, 4, 1, 1);
+  // Body highlight
+  g.fillStyle = "#005500";
+  g.fillRect(6, 8, 4, 2);
+  // Legs depend on hop state — extended on hop, tucked otherwise.
+  g.fillStyle = color;
+  if(hopping){
+    g.fillRect(1, 5, 2, 5);
+    g.fillRect(13, 5, 2, 5);
+    g.fillRect(3, 13, 2, 3);
+    g.fillRect(11, 13, 2, 3);
+  } else {
+    g.fillRect(2, 7, 2, 4);
+    g.fillRect(12, 7, 2, 4);
+    g.fillRect(4, 12, 2, 2);
+    g.fillRect(10, 12, 2, 2);
+  }
+  g.restore();
+}
+
+function renderFrogger(){
+  // Background bands per zone
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, W, H);
+  // River
+  g.fillStyle = "#1010aa";
+  g.fillRect(0, FROG_OFFSET_Y + FROG_TILE, W, FROG_TILE * 5);
+  // Median (purple/dark)
+  g.fillStyle = "#664400";
+  g.fillRect(0, FROG_OFFSET_Y + 6*FROG_TILE, W, FROG_TILE);
+  // Road
+  g.fillStyle = "#181818";
+  g.fillRect(0, FROG_OFFSET_Y + 7*FROG_TILE, W, FROG_TILE * 5);
+  // Lane dashes on the road to give it some texture
+  g.fillStyle = "#444";
+  for(let r=8; r<12; r++){
+    const ly = FROG_OFFSET_Y + r*FROG_TILE;
+    for(let x=4; x<W; x+=12) g.fillRect(x, ly, 6, 1);
+  }
+  // Start strip
+  g.fillStyle = "#664400";
+  g.fillRect(0, FROG_OFFSET_Y + 12*FROG_TILE, W, FROG_TILE);
+
+  // Home row backdrop: trees (green) with 5 home slots cut out (black).
+  g.fillStyle = "#226622";
+  g.fillRect(0, FROG_OFFSET_Y, W, FROG_TILE);
+  for(let i=0;i<FROG_HOME_COLS.length;i++){
+    const x = FROG_HOME_COLS[i] * FROG_TILE;
+    g.fillStyle = "#000";
+    g.fillRect(x, FROG_OFFSET_Y, FROG_TILE, FROG_TILE);
+    if(frog.homes[i]){
+      // Filled — small frog facing up
+      drawFrogSprite(x, FROG_OFFSET_Y, 0, "#22cc22", false);
+    }
+  }
+
+  // Lane entities
+  for(let r=1;r<FROG_ROWS;r++){
+    const lane = frog.lanes[r];
+    if(!lane) continue;
+    const def = lane.def;
+    for(const e of lane.entities){
+      const x = Math.round(e.x), y = e.y;
+      if(def.kind === "log"){
+        g.fillStyle = "#aa6622";
+        g.fillRect(x, y+2, e.w, FROG_TILE-4);
+        g.fillStyle = "#774411";
+        g.fillRect(x, y+5, e.w, 1);
+        g.fillRect(x, y+10, e.w, 1);
+        g.fillStyle = "#cc8844";
+        g.fillRect(x, y+2, e.w, 1);
+      } else if(def.kind === "turt"){
+        const isDiving = e.diveT > 180;
+        if(isDiving) continue;
+        const isWarning = e.diveT > 150;
+        if(isWarning && Math.floor(frame/4) % 2 === 0) continue;
+        for(let t=0;t<def.len;t++){
+          const tx = x + t*FROG_TILE;
+          g.fillStyle = "#22ccaa";
+          g.beginPath();
+          g.arc(tx + 8, y + 8, 6, 0, Math.PI*2);
+          g.fill();
+          g.fillStyle = "#118877";
+          g.fillRect(tx + 5, y + 5, 6, 6);
+          g.fillStyle = "#22ccaa";
+          // Little flippers
+          g.fillRect(tx + 2, y + 6, 2, 2);
+          g.fillRect(tx + 12, y + 6, 2, 2);
+        }
+      } else if(def.kind === "car" || def.kind === "truck"){
+        g.fillStyle = e.color;
+        g.fillRect(x+1, y+2, e.w-2, FROG_TILE-4);
+        // Direction indicator strip
+        g.fillStyle = "#fff";
+        if(def.dir > 0) g.fillRect(x+e.w-3, y+6, 2, 4);
+        else            g.fillRect(x+1,    y+6, 2, 4);
+        // Wheels
+        g.fillStyle = "#000";
+        g.fillRect(x+1, y+1, 2, 2);
+        g.fillRect(x+e.w-3, y+1, 2, 2);
+        g.fillRect(x+1, y+FROG_TILE-3, 2, 2);
+        g.fillRect(x+e.w-3, y+FROG_TILE-3, 2, 2);
+        if(def.kind === "truck"){
+          // Cab on the leading edge
+          g.fillStyle = "#fff";
+          if(def.dir > 0) g.fillRect(x+e.w-FROG_TILE+2, y+4, FROG_TILE-4, 8);
+          else            g.fillRect(x+2, y+4, FROG_TILE-4, 8);
+        }
+      }
+    }
+  }
+
+  // Frog (or splat / sinking)
+  if(frog.alive){
+    const hide = frog.invulnT > 0 && Math.floor(frame/4) % 2 === 0;
+    if(!hide) drawFrogSprite(Math.round(frog.x), Math.round(frog.y), frog.dir, "#22ee22", frog.hopT > 0);
+  } else if(state.mode === "dying"){
+    const cx = Math.round(frog.x) + FROG_TILE/2;
+    const cy = Math.round(frog.y) + FROG_TILE/2;
+    const t = 60 - frog.deadT; // 0..60
+    if(frog.splat){
+      // Splat: expanding red blob with x's for eyes
+      g.fillStyle = "#cc2222";
+      const r = 2 + t * 0.15;
+      g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2); g.fill();
+      g.fillStyle = "#ff6666";
+      for(let i=0;i<6;i++){
+        const a = i * Math.PI/3 + t*0.05;
+        g.fillRect(cx + Math.cos(a)*r - 1, cy + Math.sin(a)*r - 1, 2, 2);
+      }
+    } else {
+      // Sink: blue ripple rings
+      g.strokeStyle = "#88ccff";
+      g.lineWidth = 1;
+      for(let i=0;i<3;i++){
+        const r = ((t + i*15) % 30);
+        g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2); g.stroke();
+      }
+      g.fillStyle = "#22ee22";
+      g.fillRect(cx-2, cy-2, 4, 4);
+    }
+  }
+
+  // Footer: time bar + filled-home count
+  drawText("TIME", W-90, H-9, C_WHITE);
+  const barW = Math.max(0, Math.floor((frog.timer / (60*60)) * 60));
+  g.fillStyle = barW > 20 ? C_GREEN : C_RED;
+  g.fillRect(W-66, H-8, barW, 4);
+  g.strokeStyle = C_WHITE;
+  g.lineWidth = 1;
+  g.strokeRect(W-67, H-9, 62, 6);
+}
+
 // ---------- Inter-game transitions ----------
 function transitionTo(target){
   state.mode = "transition";
@@ -1590,6 +2003,8 @@ function transitionTo(target){
     state.transitionLabel = "STAGE " + state.level + "  ASTEROIDS";
   } else if(target === "pacman"){
     state.transitionLabel = "STAGE " + state.level + "  PAC-MAN";
+  } else if(target === "frogger"){
+    state.transitionLabel = "STAGE " + state.level + "  FROGGER";
   } else {
     // Returning to invaders bumps the round counter.
     state.transitionLabel = "WAVE " + (state.level + 1) + "  INVADERS";
@@ -1612,6 +2027,10 @@ function finishTransition(){
   } else if(state.transitionTo === "pacman"){
     state.gameType = "pacman";
     buildPacmanLevel();
+    state.mode = "play";
+  } else if(state.transitionTo === "frogger"){
+    state.gameType = "frogger";
+    initFrogger();
     state.mode = "play";
   } else {
     state.gameType = "invaders";
@@ -1656,6 +2075,11 @@ function startGame(){
   pac.dotsEaten = 0;
   pac.fruit = null;
   pac.frightenedT = 0;
+  // Frogger state — homes get reset on initFrogger but make sure a
+  // previous run can't leak filled slots into the title attract.
+  frog.homes = [false,false,false,false,false];
+  frog.lanes = [];
+  frog.alive = true;
   buildBunkers();
   buildFleet(state.level);
 }
@@ -1743,6 +2167,11 @@ function update(){
 
   if(state.gameType === "pacman"){
     updatePacman();
+    return;
+  }
+
+  if(state.gameType === "frogger"){
+    updateFrogger();
     return;
   }
 
@@ -2213,6 +2642,8 @@ function render(){
       renderAsteroids();
     } else if(state.gameType === "pacman"){
       renderPacman();
+    } else if(state.gameType === "frogger"){
+      renderFrogger();
     }
 
     // Lives display (shared HUD) — Pac-Man hides this since the maze fills
@@ -2222,6 +2653,15 @@ function render(){
       for(let i=0;i<Math.max(0,state.lives);i++){
         if(state.gameType === "invaders"){
           drawSprite(sprites.player, 24 + i*16, H-10);
+        } else if(state.gameType === "frogger"){
+          // Tiny frog icon for the frogger stage.
+          g.save();
+          g.translate(24 + i*12, H-12);
+          g.fillStyle = "#22ee22";
+          g.fillRect(2, 3, 6, 4);
+          g.fillRect(1, 2, 2, 2); g.fillRect(7, 2, 2, 2);
+          g.fillRect(0, 4, 2, 3); g.fillRect(8, 4, 2, 3);
+          g.restore();
         } else {
           // Tiny vector ship icon for the asteroids stage.
           g.save();
