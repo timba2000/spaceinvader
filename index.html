@@ -3623,30 +3623,32 @@ function render(){
   if(state.mode === "transition"){
     const t = state.transitionT;
     const blink = Math.floor(frame/8) % 2 === 0;
-    // Full-screen dark overlay
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, W*SCALE, H*SCALE);
-    // Tribute message — drawn with native canvas text for large size
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    // Glowing outer pass
-    ctx.font = "bold " + Math.floor(14*SCALE) + "px 'Press Start 2P', monospace";
-    ctx.fillStyle = blink ? "#ff0" : "#f80";
-    ctx.shadowColor = blink ? "#ff0" : "#f80";
-    ctx.shadowBlur = 18 * SCALE;
-    ctx.fillText("Tim Barnes is such", W/2*SCALE, H/2*SCALE - 22*SCALE);
-    ctx.fillText("an amazing guy!", W/2*SCALE, H/2*SCALE - 6*SCALE);
-    ctx.shadowBlur = 0;
-    // Stage label
-    ctx.font = "bold " + Math.floor(7*SCALE) + "px 'Press Start 2P', monospace";
-    ctx.fillStyle = "#0f0";
-    ctx.fillText(state.transitionLabel, W/2*SCALE, H/2*SCALE + 14*SCALE);
+    // Full-screen black background (offscreen canvas already cleared above,
+    // but re-fill here so the transition sits over a pure black field)
+    g.fillStyle = "#000";
+    g.fillRect(0, 0, W, H);
+    // Tribute message using native canvas text scaled to the logical canvas
+    g.save();
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    // Glow effect
+    g.shadowColor = blink ? "#ff0" : "#f80";
+    g.shadowBlur = 8;
+    g.fillStyle = blink ? "#ffe000" : "#ff8800";
+    g.font = "bold 12px monospace";
+    g.fillText("Tim Barnes is such", W / 2, H / 2 - 22);
+    g.fillText("an amazing guy!", W / 2, H / 2 - 8);
+    g.shadowBlur = 0;
+    // Stage label in smaller green text
+    g.font = "bold 7px monospace";
+    g.fillStyle = "#00ff00";
+    g.fillText(state.transitionLabel, W / 2, H / 2 + 10);
+    // GET READY shown in second half of the timer
     if(t < 120){
-      ctx.fillStyle = "#fff";
-      ctx.fillText("GET READY!", W/2*SCALE, H/2*SCALE + 26*SCALE);
+      g.fillStyle = blink ? "#fff" : "#aaa";
+      g.fillText("GET READY!", W / 2, H / 2 + 24);
     }
-    ctx.restore();
+    g.restore();
   }
 
   if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover" || state.mode === "transition"){
