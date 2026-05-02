@@ -357,6 +357,11 @@ const state = {
   score: 0,
   hi: parseInt(safeStore.get("si_hi","0"),10) || 0,
   lives: 3,
+  // Extra-life threshold — every 5000 points awards +1 life. The threshold
+  // bumps by 5000 each time it's crossed so a single big score awards the
+  // right number of extra lives in one go.
+  nextExtraLifeAt: 5000,
+  extraLifeMsgT: 0,    // ticks of on-screen "1UP" feedback remaining
   level: 1,            // round number; shared across both games for difficulty
   player: { x: 20, y: H-24, w: 13, h: 7, alive:true, deadT: 0, anim:0, invulnT: 0 },
   bullet: null,        // {x,y}
@@ -2052,6 +2057,8 @@ function startGame(){
   state.gameType = "invaders";
   state.score = 0;
   state.lives = 3;
+  state.nextExtraLifeAt = 5000;
+  state.extraLifeMsgT = 0;
   state.level = 1;
   state.player.x = 20;
   state.player.alive = true;
@@ -2560,6 +2567,10 @@ function render(){
   drawText(String(state.score).padStart(4,"0"), 16, 14, C_WHITE);
   drawText(String(state.hi).padStart(4,"0"), 96, 14, C_WHITE);
   drawText("0000", 176, 14, C_WHITE);
+  // "1UP" feedback when an extra life is awarded — blinks above the score.
+  if(state.extraLifeMsgT > 0 && Math.floor(frame/4) % 2 === 0){
+    drawText("1UP!", 16, 22, C_GREEN);
+  }
 
   if(state.mode === "title"){
     drawText("PLAY", W/2 - 12, 70, C_WHITE);
@@ -2703,6 +2714,21 @@ let acc = 0;
 const STEP = 1000/60;          // game updates at 60 Hz regardless of refresh rate
 let errorCount = 0;
 
+// Award one extra life every 5000 points. The `while` loop handles the case
+// where a single big score (e.g. 1600 from a chained ghost combo on top of
+// other points) crosses two thresholds at once.
+function checkExtraLife(){
+  while(state.score >= state.nextExtraLifeAt){
+    state.lives++;
+    state.nextExtraLifeAt += 5000;
+    state.extraLifeMsgT = 90;       // ~1.5s of "1UP" on screen
+    // 1UP fanfare — three quick rising squares.
+    beep(880, 0.06, "square", 0.07);
+    setTimeout(()=>beep(1175, 0.06, "square", 0.07), 70);
+    setTimeout(()=>beep(1568, 0.10, "square", 0.07), 140);
+  }
+}
+
 function safeUpdate(){
   try {
     if(state.mode === "title") titleAnim();
@@ -2714,6 +2740,8 @@ function safeUpdate(){
       keys["Space"] = false;
     }
     update();
+    checkExtraLife();
+    if(state.extraLifeMsgT > 0) state.extraLifeMsgT--;
   } catch(e){
     errorCount++;
     console.error("update error:", e);
