@@ -1906,8 +1906,8 @@ function updateFrogger(){
       setTimeout(()=>beep(1200, 0.1, "square", 0.06), 80);
       // Reset frog to start, keep filled homes.
       froggerRespawn();
-      // If all 5 homes are filled the stage is cleared.
-      if(frog.homes.every(h => h)) froggerHomeReached();
+      // If 3 homes are filled the stage is cleared.
+      if(frog.homes.filter(h => h).length >= 3) froggerHomeReached();
       return;
     } else {
       // Hit a tree or already-filled slot
