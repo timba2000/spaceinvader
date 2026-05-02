@@ -3651,7 +3651,7 @@ function render(){
     g.restore();
   }
 
-  if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover" || state.mode === "transition"){
+  if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover"){
     if(state.gameType === "invaders"){
       // Enemies
       for(const e of state.enemies){
