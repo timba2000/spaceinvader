@@ -517,6 +517,37 @@ const frog = {
   splat: false,       // visual: did we die from car (splat) vs water (sink)
 };
 
+// ---------- Donkey Kong constants & state ----------
+const DK_GIRDERS = [
+  { x1:10,  x2:214, y:48  },  // G0: DK/Pauline platform (top)
+  { x1:40,  x2:214, y:90  },  // G1
+  { x1:10,  x2:180, y:132 },  // G2
+  { x1:40,  x2:214, y:174 },  // G3
+  { x1:10,  x2:214, y:216 },  // G4: player start (bottom)
+];
+const DK_LADDERS = [
+  { x:60,  y1:48,  y2:90  },
+  { x:190, y1:48,  y2:90  },
+  { x:150, y1:90,  y2:132 },
+  { x:55,  y1:90,  y2:132 },
+  { x:55,  y1:132, y2:174 },
+  { x:170, y1:132, y2:174 },
+  { x:170, y1:174, y2:216 },
+  { x:55,  y1:174, y2:216 },
+];
+const DK_PW = 8;   // player width
+const DK_PH = 12;  // player height
+const DK_BW = 7;   // barrel width
+const DK_BH = 7;   // barrel height
+const dk = {
+  player: { x:0, y:0, vx:0, vy:0, onGround:false, onLadder:false, facing:1, walkFrame:0 },
+  barrels: [],
+  barrelCD: 0,
+  deadT: 0,
+  jumpLatch: false,
+  alive: true,
+};
+
 // ---------- Bunkers ----------
 // Original bunker shape: 22 wide, 16 tall, with arched cutout at bottom.
 const BUNKER_SHAPE = [
@@ -1695,7 +1726,7 @@ function froggerHomeReached(){
   beep(1200, 0.1, "square", 0.07);
   setTimeout(()=>beep(1600, 0.1, "square", 0.07), 100);
   setTimeout(()=>beep(2000, 0.15, "square", 0.07), 200);
-  transitionTo("invaders");
+  transitionTo("donkey-kong");
 }
 
 function updateFrogger(){
@@ -1999,6 +2030,315 @@ function renderFrogger(){
   g.strokeRect(W-67, H-9, 62, 6);
 }
 
+// ---------- Donkey Kong ----------
+function initDonkeyKong(){
+  const g4 = DK_GIRDERS[4];
+  dk.player.x = Math.floor((g4.x1 + g4.x2) / 2) - DK_PW / 2;
+  dk.player.y = g4.y - DK_PH;
+  dk.player.vx = 0;
+  dk.player.vy = 0;
+  dk.player.onGround = true;
+  dk.player.onLadder = false;
+  dk.player.facing = 1;
+  dk.player.walkFrame = 0;
+  dk.barrels = [];
+  dk.barrelCD = 150;
+  dk.deadT = 0;
+  dk.jumpLatch = false;
+  dk.alive = true;
+}
+
+function dkKill(){
+  if(!dk.alive) return;
+  dk.alive = false;
+  dk.deadT = 90;
+  state.lives--;
+  state.mode = "dying";
+  beep(200, 0.12, "sawtooth", 0.08);
+  setTimeout(()=>beep(160, 0.12, "sawtooth", 0.08), 150);
+  setTimeout(()=>beep(120, 0.18, "sawtooth", 0.08), 300);
+}
+
+function dkRespawn(){
+  const g4 = DK_GIRDERS[4];
+  dk.player.x = Math.floor((g4.x1 + g4.x2) / 2) - DK_PW / 2;
+  dk.player.y = g4.y - DK_PH;
+  dk.player.vx = 0;
+  dk.player.vy = 0;
+  dk.player.onGround = true;
+  dk.player.onLadder = false;
+  dk.player.facing = 1;
+  dk.alive = true;
+  dk.barrels = [];
+  dk.barrelCD = 150;
+}
+
+function updateDonkeyKong(){
+  // DK throws barrels on a timer
+  if(state.mode === "play"){
+    dk.barrelCD--;
+    if(dk.barrelCD <= 0){
+      dk.barrels.push({
+        x: 22, y: DK_GIRDERS[0].y - DK_BH,
+        vy: 0, girder: 0, dir: 1,
+      });
+      dk.barrelCD = 130 + Math.floor(Math.random() * 80);
+      beep(220, 0.05, "sawtooth", 0.05);
+      setTimeout(()=>beep(180, 0.07, "sawtooth", 0.05), 80);
+    }
+  }
+
+  // Barrel physics
+  for(let i = dk.barrels.length - 1; i >= 0; i--){
+    const b = dk.barrels[i];
+    if(b.girder >= 0){
+      // Rolling on a girder
+      b.x += b.dir * 1.4;
+      b.y = DK_GIRDERS[b.girder].y - DK_BH;
+      const gr = DK_GIRDERS[b.girder];
+      if(b.dir > 0 && b.x > gr.x2){
+        b.girder = -1; b.vy = 0.5;
+      } else if(b.dir < 0 && b.x + DK_BW < gr.x1){
+        b.girder = -1; b.vy = 0.5;
+      }
+    } else {
+      // Falling
+      b.vy = Math.min(b.vy + 0.5, 6);
+      b.y += b.vy;
+      // Check landing on a girder
+      for(let j = 0; j < DK_GIRDERS.length; j++){
+        const gr = DK_GIRDERS[j];
+        if(b.vy > 0 && b.y + DK_BH >= gr.y && b.y + DK_BH <= gr.y + 9 &&
+           b.x + DK_BW > gr.x1 && b.x < gr.x2){
+          b.girder = j;
+          b.y = gr.y - DK_BH;
+          b.vy = 0;
+          // Even-indexed girders roll right, odd roll left — matches the stagger layout
+          b.dir = (j % 2 === 0) ? 1 : -1;
+          break;
+        }
+      }
+      if(b.y > H + 20) dk.barrels.splice(i, 1);
+    }
+  }
+
+  // Dying countdown
+  if(state.mode === "dying"){
+    dk.deadT--;
+    if(dk.deadT <= 0){
+      if(state.lives <= 0){
+        saveHi();
+        state.mode = "gameover";
+        state.gameoverT = 0;
+        state.restartArmed = false;
+      } else {
+        dkRespawn();
+        state.mode = "play";
+      }
+    }
+    return;
+  }
+  if(state.mode !== "play") return;
+
+  const p = dk.player;
+
+  // Ladder detection — snap x to ladder when close enough
+  let onLadder = null;
+  const pcx = p.x + DK_PW / 2;
+  for(const l of DK_LADDERS){
+    if(Math.abs(pcx - l.x) < 7 && p.y + DK_PH > l.y1 + 4 && p.y < l.y2){
+      onLadder = l;
+      break;
+    }
+  }
+  p.onLadder = !!onLadder;
+
+  // Horizontal movement (disabled while climbing)
+  if(!p.onLadder){
+    if(keys["ArrowLeft"])       { p.vx = -1.5; p.facing = -1; }
+    else if(keys["ArrowRight"]) { p.vx =  1.5; p.facing =  1; }
+    else                          p.vx = 0;
+  } else {
+    p.vx = 0;
+    // Smoothly snap player x to ladder center
+    p.x += (onLadder.x - DK_PW / 2 - p.x) * 0.3;
+  }
+
+  // Ladder climbing
+  if(p.onLadder){
+    if(keys["ArrowUp"])        { p.y -= 1.2; p.vy = 0; }
+    else if(keys["ArrowDown"]) { p.y += 1.2; p.vy = 0; }
+  }
+
+  // Jump (only when grounded and not climbing)
+  if(keys["Space"] && !dk.jumpLatch && p.onGround && !p.onLadder){
+    dk.jumpLatch = true;
+    p.vy = -4.5;
+    p.onGround = false;
+    beep(600, 0.05, "square", 0.04);
+  }
+  if(!keys["Space"]) dk.jumpLatch = false;
+
+  // Gravity + position integration
+  if(!p.onLadder) p.vy += 0.4;
+  p.y += p.vy;
+  p.x += p.vx;
+
+  // Girder collision (landing from above only)
+  p.onGround = false;
+  for(const gr of DK_GIRDERS){
+    const feet = p.y + DK_PH;
+    if(p.x + DK_PW > gr.x1 && p.x < gr.x2 &&
+       feet >= gr.y && feet <= gr.y + 6 && p.vy >= 0){
+      p.y = gr.y - DK_PH;
+      p.vy = 0;
+      p.onGround = true;
+      break;
+    }
+  }
+
+  // Screen bounds
+  if(p.x < 0) p.x = 0;
+  if(p.x + DK_PW > W) p.x = W - DK_PW;
+  // Fell off bottom
+  if(p.y > H) { dkKill(); return; }
+
+  // Walk animation counter
+  if(Math.abs(p.vx) > 0.1 && p.onGround) p.walkFrame++;
+
+  // Barrel-player collision (slightly forgiving hitbox so jumping over is satisfying)
+  for(const b of dk.barrels){
+    const ddx = Math.abs((b.x + DK_BW/2) - (p.x + DK_PW/2));
+    const ddy = Math.abs((b.y + DK_BH/2) - (p.y + DK_PH/2));
+    if(ddx < 7 && ddy < 8){ dkKill(); return; }
+  }
+
+  // Win: player climbed all the way to the top platform (G0)
+  if(p.onGround && p.y + DK_PH <= DK_GIRDERS[0].y + 1){
+    state.score += 1000;
+    beep(523, 0.08, "square", 0.06);
+    setTimeout(()=>beep(659, 0.08, "square", 0.06), 100);
+    setTimeout(()=>beep(784, 0.08, "square", 0.06), 200);
+    setTimeout(()=>beep(1047, 0.15, "square", 0.06), 300);
+    transitionTo("invaders");
+  }
+}
+
+function renderDonkeyKong(){
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, W, H);
+
+  // Girders (classic red-orange steel beams)
+  for(const gr of DK_GIRDERS){
+    g.fillStyle = "#cc4400";
+    g.fillRect(gr.x1, gr.y, gr.x2 - gr.x1, 4);
+    g.fillStyle = "#ff7722";
+    for(let rx = gr.x1 + 8; rx < gr.x2 - 2; rx += 16){
+      g.fillRect(rx, gr.y + 1, 2, 2);  // rivets
+    }
+  }
+
+  // Ladders (yellow runged)
+  for(const l of DK_LADDERS){
+    g.fillStyle = "#ddcc55";
+    g.fillRect(l.x - 3, l.y1, 2, l.y2 - l.y1);  // left rail
+    g.fillRect(l.x + 1, l.y1, 2, l.y2 - l.y1);  // right rail
+    g.fillStyle = "#bbaa33";
+    for(let ry = l.y1 + 4; ry < l.y2; ry += 8){
+      g.fillRect(l.x - 3, ry, 6, 2);  // rung
+    }
+  }
+
+  // Donkey Kong (top-left of G0)
+  const g0 = DK_GIRDERS[0];
+  const dkX = 10, dkY = g0.y - 20;
+  g.fillStyle = "#884400";
+  g.fillRect(dkX,     dkY + 4,  18, 14);  // body
+  g.fillRect(dkX + 2, dkY,      14,  6);  // head
+  g.fillStyle = "#ffcc88";
+  g.fillRect(dkX + 4, dkY + 1, 10, 4);   // face
+  g.fillStyle = "#000";
+  g.fillRect(dkX + 5,  dkY + 2, 2, 2);   // left eye
+  g.fillRect(dkX + 11, dkY + 2, 2, 2);   // right eye
+  // Alternating arm animation
+  const dkArmUp = Math.floor(frame / 30) % 2 === 0;
+  g.fillStyle = "#884400";
+  if(dkArmUp){
+    g.fillRect(dkX - 3, dkY,      3, 8);   // left arm up
+    g.fillRect(dkX + 18, dkY + 8, 3, 8);  // right arm down
+  } else {
+    g.fillRect(dkX - 3, dkY + 8, 3, 8);   // left arm down
+    g.fillRect(dkX + 18, dkY,    3, 8);   // right arm up
+  }
+
+  // Pauline (far right of G0 — the rescue target)
+  const pauX = 196, pauY = g0.y - 14;
+  g.fillStyle = "#ff4488";
+  g.fillRect(pauX, pauY + 6, 8, 8);       // dress
+  g.fillStyle = "#ffcc88";
+  g.fillRect(pauX + 1, pauY, 6, 6);       // head
+  g.fillStyle = "#994400";
+  g.fillRect(pauX, pauY - 2, 8, 3);       // hair
+  // Pauline waves for help
+  if(Math.floor(frame / 20) % 2 === 0){
+    g.fillStyle = "#ffcc88";
+    g.fillRect(pauX + 8, pauY + 1, 3, 4); // waving arm
+  }
+
+  // Barrels (rolling cylinders)
+  for(const b of dk.barrels){
+    const bx = Math.round(b.x), by = Math.round(b.y);
+    g.fillStyle = "#aa6622";
+    g.beginPath();
+    g.arc(bx + DK_BW/2, by + DK_BH/2, DK_BW/2 + 0.5, 0, Math.PI*2);
+    g.fill();
+    // Rotating stave line for rolling effect
+    g.save();
+    g.translate(bx + DK_BW/2, by + DK_BH/2);
+    g.rotate(frame * 0.15 * b.dir);
+    g.fillStyle = "#774411";
+    g.fillRect(-DK_BW/2, -1, DK_BW, 2);
+    g.restore();
+  }
+
+  // Jumpman (player)
+  if(dk.alive || state.mode === "dying"){
+    const p = dk.player;
+    const px = Math.round(p.x), py = Math.round(p.y);
+    if(state.mode === "dying"){
+      // Flashing death
+      if(Math.floor(dk.deadT / 6) % 2 === 0){
+        g.fillStyle = "#ff4444";
+        g.fillRect(px, py, DK_PW, DK_PH);
+      }
+    } else {
+      const fl = p.facing < 0;
+      // Hat
+      g.fillStyle = "#cc2222";
+      g.fillRect(px + 1, py, 6, 3);
+      // Hair
+      g.fillStyle = "#994400";
+      g.fillRect(fl ? px + 5 : px + 1, py + 1, 2, 2);
+      // Face
+      g.fillStyle = "#ffcc88";
+      g.fillRect(fl ? px + 1 : px + 2, py + 3, 5, 4);
+      // Overalls
+      g.fillStyle = "#3366cc";
+      g.fillRect(px, py + 7, DK_PW, 5);
+      // Feet (walking animation)
+      g.fillStyle = "#884400";
+      if(p.onGround && Math.abs(p.vx) > 0.1){
+        const step = Math.floor(p.walkFrame / 4) % 2;
+        g.fillRect(px + (step ? 0 : 4), py + DK_PH - 2, 3, 2);
+        g.fillRect(px + (step ? 4 : 0), py + DK_PH - 1, 3, 1);
+      } else {
+        g.fillRect(px, py + DK_PH - 2, 3, 2);
+        g.fillRect(px + 4, py + DK_PH - 2, 3, 2);
+      }
+    }
+  }
+}
+
 // ---------- Inter-game transitions ----------
 function transitionTo(target){
   state.mode = "transition";
@@ -2010,6 +2350,8 @@ function transitionTo(target){
     state.transitionLabel = "STAGE " + state.level + "  PAC-MAN";
   } else if(target === "frogger"){
     state.transitionLabel = "STAGE " + state.level + "  FROGGER";
+  } else if(target === "donkey-kong"){
+    state.transitionLabel = "STAGE " + state.level + "  DONKEY KONG";
   } else {
     // Returning to invaders bumps the round counter.
     state.transitionLabel = "WAVE " + (state.level + 1) + "  INVADERS";
@@ -2036,6 +2378,10 @@ function finishTransition(){
   } else if(state.transitionTo === "frogger"){
     state.gameType = "frogger";
     initFrogger();
+    state.mode = "play";
+  } else if(state.transitionTo === "donkey-kong"){
+    state.gameType = "donkey-kong";
+    initDonkeyKong();
     state.mode = "play";
   } else {
     state.gameType = "invaders";
@@ -2179,6 +2525,11 @@ function update(){
 
   if(state.gameType === "frogger"){
     updateFrogger();
+    return;
+  }
+
+  if(state.gameType === "donkey-kong"){
+    updateDonkeyKong();
     return;
   }
 
@@ -2655,6 +3006,8 @@ function render(){
       renderPacman();
     } else if(state.gameType === "frogger"){
       renderFrogger();
+    } else if(state.gameType === "donkey-kong"){
+      renderDonkeyKong();
     }
 
     // Lives display (shared HUD) — Pac-Man hides this since the maze fills
@@ -2672,6 +3025,17 @@ function render(){
           g.fillRect(2, 3, 6, 4);
           g.fillRect(1, 2, 2, 2); g.fillRect(7, 2, 2, 2);
           g.fillRect(0, 4, 2, 3); g.fillRect(8, 4, 2, 3);
+          g.restore();
+        } else if(state.gameType === "donkey-kong"){
+          // Tiny Jumpman icon for the Donkey Kong stage.
+          g.save();
+          g.translate(24 + i*12, H-12);
+          g.fillStyle = "#cc2222";  // hat
+          g.fillRect(1, 0, 6, 3);
+          g.fillStyle = "#ffcc88";  // face
+          g.fillRect(2, 3, 4, 3);
+          g.fillStyle = "#3366cc";  // overalls
+          g.fillRect(0, 6, 8, 4);
           g.restore();
         } else {
           // Tiny vector ship icon for the asteroids stage.
