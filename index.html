@@ -3138,144 +3138,170 @@ function drawHadouken(p){
 }
 
 function drawSFHealthBar(x, y, hp, maxHp, name, rightAlign){
-  const W_BAR = 92;
-  // Outer black frame
+  const W_BAR = 86;
+  // Character name in SF2 yellow
+  drawText(name, rightAlign ? x + W_BAR - name.length * 6 : x, y, "#ffee44");
+  // Black background (empty health)
   g.fillStyle = "#000";
-  g.fillRect(x - 1, y - 1, W_BAR + 2, 11);
-  // White "empty" ghost showing lost health
-  g.fillStyle = "#555";
-  g.fillRect(x, y, W_BAR, 9);
-  // Current health fill
+  g.fillRect(x, y + 8, W_BAR, 9);
+  // Health fill — SF2 yellow, turns red when critical
   const ratio = Math.max(0, hp / maxHp);
   const w = Math.floor(W_BAR * ratio);
-  let color = "#22ee22";
-  if(ratio < 0.5)  color = "#ffcc00";
-  if(ratio < 0.25) color = "#ff2222";
-  g.fillStyle = color;
-  if(rightAlign) g.fillRect(x + W_BAR - w, y, w, 9);
-  else           g.fillRect(x, y, w, 9);
-  // Highlight stripe on top of health
-  g.fillStyle = "rgba(255,255,255,0.35)";
-  if(rightAlign) g.fillRect(x + W_BAR - w, y, w, 3);
-  else           g.fillRect(x, y, w, 3);
-  // Gold border
-  g.strokeStyle = "#ccaa00";
+  g.fillStyle = ratio < 0.25 ? "#ee2020" : "#e8e020";
+  if(rightAlign) g.fillRect(x + W_BAR - w, y + 8, w, 9);
+  else           g.fillRect(x, y + 8, w, 9);
+  // Thin white border (SF2 style)
+  g.strokeStyle = "#ffffff";
   g.lineWidth = 1;
-  g.strokeRect(x - 0.5, y - 0.5, W_BAR + 1, 10);
-  // Name label
-  drawText(name, rightAlign ? x + W_BAR - name.length * 6 : x, y - 10, "#ffcc44");
+  g.strokeRect(x + 0.5, y + 8.5, W_BAR - 1, 8);
 }
 
 function renderSF(){
-  // --- SKY (sunset gradient via stacked bands) ---
-  g.fillStyle = "#100520"; g.fillRect(0,   0, W, 38);
-  g.fillStyle = "#2a0838"; g.fillRect(0,  38, W, 22);
-  g.fillStyle = "#6a1828"; g.fillRect(0,  60, W, 22);
-  g.fillStyle = "#bb4010"; g.fillRect(0,  82, W, 22);
-  g.fillStyle = "#e86818"; g.fillRect(0, 104, W, 18);
-  g.fillStyle = "#ff9930"; g.fillRect(0, 122, W, 10);
+  // ===== RYU'S JAPAN DOJO STAGE =====
 
-  // Setting sun with layered glow
-  const sunX = Math.round(W * 0.76), sunY = 112;
-  g.fillStyle = "#ff6600"; g.beginPath(); g.arc(sunX, sunY, 16, 0, Math.PI*2); g.fill();
-  g.fillStyle = "#ffaa22"; g.beginPath(); g.arc(sunX, sunY, 11, 0, Math.PI*2); g.fill();
-  g.fillStyle = "#ffee66"; g.beginPath(); g.arc(sunX, sunY, 6,  0, Math.PI*2); g.fill();
+  // Sky — bright cerulean blue gradient
+  g.fillStyle = "#3366aa"; g.fillRect(0, 0, W, H);
+  g.fillStyle = "#4477bb"; g.fillRect(0, 0, W, 100);
+  g.fillStyle = "#5588cc"; g.fillRect(0, 0, W, 60);
+  g.fillStyle = "#88aacc"; g.fillRect(0, 90, W, 50);
+  g.fillStyle = "#aaccdd"; g.fillRect(0, 115, W, 25);
 
-  // Pagoda silhouettes (3-tier Japanese towers)
-  function drawPagoda(px, py){
-    g.fillStyle = "#080212";
-    g.fillRect(px + 6, py - 16, 2, 16);  // spire
-    [[8,3],[10,3],[14,3]].forEach(([tw,th],ti) => {
-      const ty = py - 12 + ti*4, tx = px + 12 - tw/2;
-      g.fillRect(tx, ty, tw, th);
-    });
-    g.fillRect(px + 3, py, 18, 10);
-    g.fillRect(px,     py + 10, 24, 8);
+  // Distant mountains — overlapping light-blue-grey silhouettes
+  g.fillStyle = "#6688aa";
+  g.fillRect(0,   92, 70, 50); g.fillRect(50, 82, 65, 60);
+  g.fillRect(100, 90, 55, 52); g.fillRect(148, 78, 80, 65);
+  g.fillStyle = "#7799bb";
+  g.fillRect(0,   98, 50, 44); g.fillRect(130, 86, 55, 57);
+
+  // ── LEFT SIDE: Red torii gate ──
+  g.fillStyle = "#aa2200";  // deep red pillars
+  g.fillRect(4,  60, 7, 75);    // left pillar
+  g.fillRect(36, 60, 7, 75);    // right pillar
+  g.fillStyle = "#cc3311";       // upper crossbeam
+  g.fillRect(0,  54, 47, 8);
+  g.fillRect(2,  63, 43, 5);    // lower crossbeam
+  g.fillStyle = "#ff5522";       // end ornaments/caps
+  g.fillRect(-2, 52, 5, 12);
+  g.fillRect(44, 52, 5, 12);
+  // Steps at base of torii
+  g.fillStyle = "#b8a888";
+  g.fillRect(2,  132, 12, 4);
+  g.fillRect(38, 132, 12, 4);
+  g.fillRect(0,  135, 18, 3);
+  g.fillRect(36, 135, 18, 3);
+
+  // ── RIGHT SIDE: Cherry blossom tree ──
+  const TX = W - 52;
+  g.fillStyle = "#4a2808";           // trunk
+  g.fillRect(TX + 10, 65, 8, 78);
+  g.fillRect(TX + 4,  58, 7, 24);   // left branch
+  g.fillRect(TX + 0,  48, 5, 20);   // left sub-branch
+  g.fillRect(TX + 18, 54, 7, 26);   // right branch
+  g.fillRect(TX + 23, 43, 5, 20);   // right sub-branch
+  g.fillStyle = "#3a1e06";           // shadow on trunk
+  g.fillRect(TX + 14, 65, 4, 78);
+
+  // Blossom clusters
+  const BL = [
+    [0,-8,22,20],[13,-15,19,18],[-5,-16,17,16],[19,-7,17,18],
+    [-3,-27,15,15],[15,-26,17,14],[7,-38,15,15],[23,-20,13,13],
+    [-7,-4,14,14],[10,-44,12,12],
+  ];
+  for(const [bx,by,bw,bh] of BL){
+    g.fillStyle = "#ffaacc";
+    g.fillRect(TX+10+bx, 76+by, bw, bh);
+    g.fillStyle = "#ee88bb";
+    g.fillRect(TX+10+bx+2, 76+by+2, bw-4, bh-4);
+    g.fillStyle = "#ffccee";
+    g.fillRect(TX+10+bx+4, 76+by+3, Math.max(2,bw-8), 3);
   }
-  drawPagoda(10,  104);
-  drawPagoda(164,  96);
-  drawPagoda(84,  112);
-
-  // Crowd rows — animated waving spectators
-  const CROWD_C = ["#cc3333","#3366cc","#33cc44","#cccc22","#cc33cc","#33cccc","#ff8833","#ffffff","#884400","#ff44aa"];
-  for(let ci = 0; ci < 26; ci++){
-    const cx = 4 + ci * 8 + (ci % 2) * 2;
-    const cy = SF_FLOOR_Y - 26 - ((ci * 13) % 8);
-    g.fillStyle = CROWD_C[ci % CROWD_C.length];
-    g.fillRect(cx, cy + 4, 6, 8);        // body
-    g.fillStyle = "#ddc090";
-    g.fillRect(cx + 1, cy, 4, 5);        // head
-    const wave = Math.floor((frame + ci * 7) / 18) % 2;
-    g.fillStyle = CROWD_C[ci % CROWD_C.length];
-    if(wave){ g.fillRect(cx - 2, cy + 1, 2, 5); g.fillRect(cx + 6, cy + 5, 2, 4); }
-    else     { g.fillRect(cx - 2, cy + 4, 2, 4); g.fillRect(cx + 6, cy + 1, 2, 5); }
+  // Falling petals (animated)
+  for(let pi = 0; pi < 8; pi++){
+    const fx = ((TX - 20 + pi*16 + Math.floor(frame*0.28)) % W + W) % W;
+    const fy = 95 + ((pi*19 + Math.floor(frame*0.45)) % 65);
+    g.fillStyle = "#ffbbdd"; g.fillRect(fx, fy, 2, 2);
   }
 
-  // Decorative banner poles
-  const BNRC = ["#cc0000","#0000cc","#cc7700","#008800"];
-  for(let b = 0; b < 4; b++){
-    const bx = 22 + b * 56;
-    g.fillStyle = "#6b3a00"; g.fillRect(bx, SF_FLOOR_Y - 48, 2, 48);
-    g.fillStyle = BNRC[b];   g.fillRect(bx + 2, SF_FLOOR_Y - 48, 11, 15);
-    g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(bx + 2, SF_FLOOR_Y - 48, 11, 2);
+  // ── CROWD: kimono-wearing spectators ──
+  const KIM_C = ["#cc2222","#2255bb","#229944","#bb9900","#882299","#aa4400","#226699","#bb4477","#448833","#aa2266"];
+  for(let ci = 0; ci < 24; ci++){
+    const cx = 4 + ci*9 + (ci%3);
+    const cy = SF_FLOOR_Y - 24 - ((ci*11)%10);
+    g.fillStyle = KIM_C[ci % KIM_C.length];
+    g.fillRect(cx, cy+5, 8, 10);      // kimono body
+    g.fillStyle = "#eeeeee";
+    g.fillRect(cx+2, cy+5, 4, 8);     // white collar
+    g.fillStyle = "#222";
+    g.fillRect(cx, cy+11, 8, 2);      // obi sash
+    g.fillStyle = "#d4a870";
+    g.fillRect(cx+1, cy, 6, 6);       // head
+    g.fillStyle = "#181008";
+    g.fillRect(cx+1, cy, 6, 2);       // hair
+    const wv = Math.floor((frame + ci*8) / 20) % 2;
+    g.fillStyle = KIM_C[ci % KIM_C.length];
+    if(wv){ g.fillRect(cx-2, cy+4, 3, 5); g.fillRect(cx+8, cy+7, 3, 5); }
+    else  { g.fillRect(cx-2, cy+7, 3, 5); g.fillRect(cx+8, cy+4, 3, 5); }
   }
 
-  // Wooden floor (planks)
-  g.fillStyle = "#7a4e2d"; g.fillRect(0, SF_FLOOR_Y, W, H - SF_FLOOR_Y);
-  g.fillStyle = "#5d3a20";
-  for(let plx = 0; plx < W; plx += 11) g.fillRect(plx, SF_FLOOR_Y, 1, H - SF_FLOOR_Y);
-  g.fillStyle = "#9b6b3a"; g.fillRect(0, SF_FLOOR_Y,     W, 2);   // highlight
-  g.fillStyle = "#3a2010"; g.fillRect(0, SF_FLOOR_Y + 2, W, 1);   // shadow
+  // ── FLOOR: light bamboo/hardwood planks ──
+  g.fillStyle = "#c8a060"; g.fillRect(0, SF_FLOOR_Y, W, H-SF_FLOOR_Y);
+  g.fillStyle = "#b09050";
+  for(let ply = SF_FLOOR_Y+7; ply < H; ply += 8) g.fillRect(0, ply, W, 2);
+  g.fillStyle = "#e0bc7a"; g.fillRect(0, SF_FLOOR_Y,     W, 3);  // front highlight
+  g.fillStyle = "#806030"; g.fillRect(0, SF_FLOOR_Y + 3, W, 2);  // shadow line
 
-  // --- HUD ---
-  drawSFHealthBar(4,  18, sf.player.hp, sf.player.maxHp, "RYU", false);
-  drawSFHealthBar(W - 96, 18, sf.ai.hp, sf.ai.maxHp, "KEN", true);
-  // Timer box
+  // ===== HUD (classic SF2 style) =====
+  g.fillStyle = "rgba(0,0,0,0.88)"; g.fillRect(0, 0, W, 22);
+  g.fillStyle = "#886600"; g.fillRect(0, 21, W, 1);  // gold divider
+
+  drawSFHealthBar(4, 2, sf.player.hp, sf.player.maxHp, "RYU", false);
+  drawSFHealthBar(W - 90, 2, sf.ai.hp, sf.ai.maxHp, "KEN", true);
+
+  // Centered timer box
   const sec = Math.max(0, Math.ceil(sf.roundT / 60));
-  g.fillStyle = "#000"; g.fillRect(W/2 - 11, 15, 22, 14);
-  g.strokeStyle = "#ccaa00"; g.lineWidth = 1; g.strokeRect(W/2 - 10.5, 15.5, 21, 13);
-  drawText(String(sec).padStart(2,"0"), W/2 - 6, 19, sec < 10 ? C_RED : C_WHITE);
+  g.fillStyle = "#000"; g.fillRect(W/2 - 10, 2, 20, 18);
+  g.strokeStyle = "#886600"; g.lineWidth = 1; g.strokeRect(W/2-9.5, 2.5, 19, 17);
+  drawText(String(sec).padStart(2,"0"), W/2-6, 6, sec < 10 ? C_RED : C_WHITE);
 
-  // --- FIGHTERS ---
+  // ===== FIGHTERS =====
   drawSFFighter(sf.player);
   drawSFFighter(sf.ai);
 
-  // --- PROJECTILES ---
+  // ===== PROJECTILES =====
   for(const p of sf.projectiles) drawHadouken(p);
 
-  // --- HIT PARTICLES ---
+  // ===== HIT PARTICLES =====
   for(const pt of sf.particles){
-    const a = Math.max(0, pt.t / 20);
-    g.globalAlpha = a;
+    g.globalAlpha = Math.max(0, pt.t / 20);
     g.fillStyle = pt.color;
-    g.fillRect(Math.round(pt.x) - 1, Math.round(pt.y) - 1, 3, 3);
+    g.fillRect(Math.round(pt.x)-1, Math.round(pt.y)-1, 3, 3);
   }
   g.globalAlpha = 1;
 
-  // --- INTRO / OUTRO TEXT (native font for impact) ---
+  // ===== INTRO / OUTRO TEXT =====
   if(sf.intro > 0){
     g.save();
     g.textAlign = "center"; g.textBaseline = "middle";
-    const itxt  = sf.intro > 60 ? "ROUND 1" : "FIGHT!";
-    const iblink = Math.floor(frame / 6) % 2 === 0;
-    g.fillStyle   = iblink ? "#ff2222" : "#ffaa00";
+    const itxt = sf.intro > 60 ? "ROUND 1" : "FIGHT!";
+    const iblink = Math.floor(frame/6) % 2 === 0;
+    g.fillStyle = iblink ? "#ff2222" : "#ffdd00";
     g.shadowColor = g.fillStyle; g.shadowBlur = 10;
     g.font = "bold 15px monospace";
-    g.fillText(itxt, W / 2, H / 2);
+    g.fillText(itxt, W/2, H/2);
     g.shadowBlur = 0; g.restore();
   }
   if(sf.winner){
     g.save();
     g.textAlign = "center"; g.textBaseline = "middle";
     const wtxt = sf.winner === "player" ? "K.O.!" : "YOU LOSE";
-    g.fillStyle   = sf.winner === "player" ? "#ffdd00" : "#ff2222";
+    g.fillStyle = sf.winner === "player" ? "#ffdd00" : "#ff3333";
     g.shadowColor = g.fillStyle; g.shadowBlur = 12;
     g.font = "bold 17px monospace";
-    g.fillText(wtxt, W / 2, H / 2 - 8);
+    g.fillText(wtxt, W/2, H/2 - 8);
     g.shadowBlur = 0;
     g.font = "bold 9px monospace";
     g.fillStyle = "#ffffff";
-    g.fillText(sf.winner === "player" ? "WINNER!" : "TRY AGAIN", W / 2, H / 2 + 8);
+    g.fillText(sf.winner === "player" ? "WINNER!" : "TRY AGAIN", W/2, H/2 + 8);
     g.restore();
   }
 }
