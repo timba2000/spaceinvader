@@ -378,6 +378,9 @@ const state = {
   explosions: [],      // {x,y,t,sprite}
   bottomReached: false,
   flash: 0,
+  flashMsgText: "",
+  flashMsgT: 0,
+  flashMsgCD: 300,
   restartArmed: false,    // gameover restart cooldown — set true ~1s after gameover
   gameoverT: 0,           // ticks since entering gameover
   // Inter-game transition
@@ -3149,6 +3152,20 @@ function bulletHitsBunker(bk, bx, by, w, h, fromBelow){
   return false;
 }
 
+// ---------- Tim Barnes flash messages ----------
+const TIM_MSGS = [
+  "TIM BARNES ROCKS!",
+  "TIM BARNES IS AMAZING!",
+  "TIM BARNES IS THE BEST!",
+  "WHAT A GUY - TIM BARNES!",
+  "TIM BARNES IS LEGENDARY!",
+  "TIM BARNES FOR THE WIN!",
+  "BIG UP TIM BARNES!",
+  "TIM BARNES IS AWESOME!",
+  "ALL HAIL TIM BARNES!",
+  "TIM BARNES IS A LEGEND!",
+];
+
 // ---------- Update ----------
 let frame = 0;
 function update(){
@@ -3159,6 +3176,17 @@ function update(){
     state.transitionT--;
     if(state.transitionT <= 0) finishTransition();
     return;
+  }
+
+  // Tim Barnes flash message countdown
+  if(state.flashMsgT > 0) state.flashMsgT--;
+  if(state.mode === "play"){
+    state.flashMsgCD--;
+    if(state.flashMsgCD <= 0){
+      state.flashMsgText = TIM_MSGS[Math.floor(Math.random() * TIM_MSGS.length)];
+      state.flashMsgT = 120;
+      state.flashMsgCD = 300 + Math.floor(Math.random() * 300);
+    }
   }
 
   if(state.mode !== "play" && state.mode !== "dying") return;
@@ -3778,6 +3806,22 @@ function render(){
       if(state.restartArmed && Math.floor(frame/30) % 2 === 0){
         drawText("PRESS ENTER", W/2 - 33, H/2 + 6, C_WHITE);
       }
+    }
+
+    // Tim Barnes flash messages — fade in/out over the game
+    if(state.flashMsgT > 0 && state.flashMsgText){
+      const alpha = Math.min(1, state.flashMsgT / 20, (120 - state.flashMsgT) / 20 + 1);
+      g.save();
+      g.globalAlpha = Math.max(0, Math.min(1, alpha));
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.font = "bold 9px monospace";
+      g.shadowColor = "#ff0";
+      g.shadowBlur = 6;
+      g.fillStyle = Math.floor(frame / 6) % 2 === 0 ? "#ffe000" : "#ff8800";
+      g.fillText(state.flashMsgText, W / 2, H / 2);
+      g.shadowBlur = 0;
+      g.restore();
     }
   }
   // Blit happens in safeRender() so we never double-blit on error.
