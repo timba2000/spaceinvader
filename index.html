@@ -3004,7 +3004,7 @@ function renderSF(){
 // ---------- Inter-game transitions ----------
 function transitionTo(target){
   state.mode = "transition";
-  state.transitionT = 90;     // ~1.5s
+  state.transitionT = 240;    // ~4s
   state.transitionTo = target;
   if(target === "asteroids"){
     state.transitionLabel = "STAGE " + state.level + "  ASTEROIDS";
@@ -3621,13 +3621,32 @@ function render(){
   }
 
   if(state.mode === "transition"){
-    // Brief stage banner between games — fades the label and shows the next stage.
     const t = state.transitionT;
     const blink = Math.floor(frame/8) % 2 === 0;
-    drawText(state.transitionLabel, W/2 - state.transitionLabel.length*3, H/2 - 4, blink ? C_GREEN : C_WHITE);
-    if(t < 60){
-      drawText("GET READY", W/2 - 27, H/2 + 10, C_WHITE);
+    // Full-screen dark overlay
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W*SCALE, H*SCALE);
+    // Tribute message — drawn with native canvas text for large size
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    // Glowing outer pass
+    ctx.font = "bold " + Math.floor(14*SCALE) + "px 'Press Start 2P', monospace";
+    ctx.fillStyle = blink ? "#ff0" : "#f80";
+    ctx.shadowColor = blink ? "#ff0" : "#f80";
+    ctx.shadowBlur = 18 * SCALE;
+    ctx.fillText("Tim Barnes is such", W/2*SCALE, H/2*SCALE - 22*SCALE);
+    ctx.fillText("an amazing guy!", W/2*SCALE, H/2*SCALE - 6*SCALE);
+    ctx.shadowBlur = 0;
+    // Stage label
+    ctx.font = "bold " + Math.floor(7*SCALE) + "px 'Press Start 2P', monospace";
+    ctx.fillStyle = "#0f0";
+    ctx.fillText(state.transitionLabel, W/2*SCALE, H/2*SCALE + 14*SCALE);
+    if(t < 120){
+      ctx.fillStyle = "#fff";
+      ctx.fillText("GET READY!", W/2*SCALE, H/2*SCALE + 26*SCALE);
     }
+    ctx.restore();
   }
 
   if(state.mode === "play" || state.mode === "dying" || state.mode === "gameover" || state.mode === "transition"){
