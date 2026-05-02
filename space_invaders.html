@@ -517,6 +517,75 @@ const frog = {
   splat: false,       // visual: did we die from car (splat) vs water (sink)
 };
 
+// ---------- Donkey Kong constants & state ----------
+const DK_GIRDERS = [
+  { x1:10,  x2:214, y:48  },  // G0: DK/Pauline platform (top)
+  { x1:40,  x2:214, y:90  },  // G1
+  { x1:10,  x2:180, y:132 },  // G2
+  { x1:40,  x2:214, y:174 },  // G3
+  { x1:10,  x2:214, y:216 },  // G4: player start (bottom)
+];
+const DK_LADDERS = [
+  { x:60,  y1:48,  y2:90  },
+  { x:190, y1:48,  y2:90  },
+  { x:150, y1:90,  y2:132 },
+  { x:55,  y1:90,  y2:132 },
+  { x:55,  y1:132, y2:174 },
+  { x:170, y1:132, y2:174 },
+  { x:170, y1:174, y2:216 },
+  { x:55,  y1:174, y2:216 },
+];
+const DK_PW = 8;   // player width
+const DK_PH = 12;  // player height
+const DK_BW = 7;   // barrel width
+const DK_BH = 7;   // barrel height
+const dk = {
+  player: { x:0, y:0, vx:0, vy:0, onGround:false, onLadder:false, facing:1, walkFrame:0 },
+  barrels: [],
+  barrelCD: 0,
+  deadT: 0,
+  jumpLatch: false,
+  alive: true,
+};
+
+// ---------- Street Fighter constants & state ----------
+const SF_FLOOR_Y = H - 26;
+const SF_BODY_W = 14;
+const SF_BODY_H = 32;
+const SF_CROUCH_H = 20;
+const SF_JUMP_VY = -7;
+const SF_GRAVITY = 0.42;
+const SF_WALK = 1.0;
+const SF_HADO_SPEED = 2.6;
+
+function makeSFFighter(x, facing, name, opts){
+  return {
+    x, y: SF_FLOOR_Y,
+    vx: 0, vy: 0,
+    facing,
+    state: "idle",
+    stateT: 0,
+    hp: 100, maxHp: 100,
+    grounded: true,
+    hitstun: 0, blockstun: 0,
+    hadoukenCD: 0,
+    inputBuf: [],
+    actionLatch: false,
+    color: opts.skin, giColor: opts.gi, hairColor: opts.hair,
+    name,
+    aiTimer: 0, aiAction: null,
+  };
+}
+
+const sf = {
+  player: null, ai: null,
+  projectiles: [],
+  roundT: 0,
+  endT: 0, winner: null,
+  hitstop: 0,
+  intro: 0,
+};
+
 // ---------- Bunkers ----------
 // Original bunker shape: 22 wide, 16 tall, with arched cutout at bottom.
 const BUNKER_SHAPE = [
@@ -1509,6 +1578,19 @@ function updatePacman(){
   }
 }
 
+// Larger, clearer ghost eyes with a pupil that tracks the move direction.
+function drawPacGhostEyes(cx, cy, dir){
+  const dd = PAC_DIRS[dir];
+  // Sclera (3×3 each)
+  g.fillStyle = "#ffffff";
+  g.fillRect(cx - 3, cy - 1, 3, 3);
+  g.fillRect(cx + 1, cy - 1, 3, 3);
+  // Pupils (1×1 each, offset by direction)
+  g.fillStyle = "#1010c8";
+  g.fillRect(cx - 2 + dd.dx, cy + dd.dy, 1, 1);
+  g.fillRect(cx + 2 + dd.dx, cy + dd.dy, 1, 1);
+}
+
 function renderPacman(){
   // Walls
   g.save();
@@ -1518,13 +1600,31 @@ function renderPacman(){
   // and reads as "Pac-Man maze" without per-edge complexity.
   g.fillStyle = "#000";
   g.fillRect(0, 0, W, H);
-  g.fillStyle = "#1414c8";
+  // Walls are drawn in two passes: a solid blue interior, then a brighter
+  // outline that "joins" only on edges where there's no neighbouring wall.
+  // That gives the maze its classic outlined-pipe look without per-corner
+  // arc rendering.
+  const isW = (r, c) => r>=0 && r<PAC_ROWS && c>=0 && c<PAC_COLS && pac.walls[r][c];
   for(let r=0;r<PAC_ROWS;r++){
     for(let c=0;c<PAC_COLS;c++){
-      if(pac.walls[r][c]){
-        const px = c*PAC_TILE, py = r*PAC_TILE + PAC_OFFSET_Y;
-        g.fillRect(px+1, py+1, PAC_TILE-2, PAC_TILE-2);
-      }
+      if(!pac.walls[r][c]) continue;
+      const px = c*PAC_TILE, py = r*PAC_TILE + PAC_OFFSET_Y;
+      // Interior block (deep blue)
+      g.fillStyle = "#0c0c80";
+      g.fillRect(px, py, PAC_TILE, PAC_TILE);
+      // Bright outlined edges only on open sides → becomes the "pipe" line.
+      g.fillStyle = "#3232ff";
+      if(!isW(r-1, c)) g.fillRect(px,           py,           PAC_TILE, 1);
+      if(!isW(r+1, c)) g.fillRect(px,           py+PAC_TILE-1, PAC_TILE, 1);
+      if(!isW(r, c-1)) g.fillRect(px,           py,           1,        PAC_TILE);
+      if(!isW(r, c+1)) g.fillRect(px+PAC_TILE-1, py,           1,        PAC_TILE);
+      // Corner clean-up: erase the bright corner pixel where two open sides
+      // meet, replacing with the dark interior — gives a softer corner.
+      g.fillStyle = "#0c0c80";
+      if(!isW(r-1, c) && !isW(r, c-1)) g.fillRect(px,           py,           1, 1);
+      if(!isW(r-1, c) && !isW(r, c+1)) g.fillRect(px+PAC_TILE-1, py,           1, 1);
+      if(!isW(r+1, c) && !isW(r, c-1)) g.fillRect(px,           py+PAC_TILE-1, 1, 1);
+      if(!isW(r+1, c) && !isW(r, c+1)) g.fillRect(px+PAC_TILE-1, py+PAC_TILE-1, 1, 1);
     }
   }
   // Ghost-house door (pink line)
@@ -1590,34 +1690,62 @@ function renderPacman(){
       color = (pac.frightenedT < 120 && Math.floor(pac.frightenedT/8)%2===0) ? "#ffffff" : "#2424ff";
     }
     if(gh.mode === "eaten" || gh.mode === "returning"){
-      // Just eyes.
-      g.fillStyle = "#ffffff";
-      g.fillRect(gh.x - 3, gh.y - 2, 2, 2);
-      g.fillRect(gh.x + 1, gh.y - 2, 2, 2);
-      g.fillStyle = "#3030ff";
-      const dd = PAC_DIRS[gh.dir];
-      g.fillRect(gh.x - 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
-      g.fillRect(gh.x + 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
+      drawPacGhostEyes(gh.x, gh.y - 1, gh.dir);
       continue;
     }
+    // Body: rounded top + scalloped (3-bump) skirt — the classic Pac-Man
+    // ghost silhouette. Animation alternates the skirt direction every few
+    // frames so the ghosts look like they're shuffling along.
+    const phase = Math.floor(frame / 8) % 2;
     g.fillStyle = color;
-    // Body: 7×7 block with a wavy bottom.
-    g.fillRect(gh.x - 4, gh.y - 4, 8, 8);
-    // Eyes
-    g.fillStyle = "#ffffff";
-    g.fillRect(gh.x - 3, gh.y - 2, 2, 2);
-    g.fillRect(gh.x + 1, gh.y - 2, 2, 2);
-    g.fillStyle = "#0000ff";
-    const dd = PAC_DIRS[gh.dir];
-    g.fillRect(gh.x - 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
-    g.fillRect(gh.x + 2 + dd.dx, gh.y - 2 + dd.dy, 1, 1);
-    // Frightened ghosts get a worried mouth.
+    // Round top dome
+    g.beginPath();
+    g.arc(gh.x, gh.y - 1, 5, Math.PI, 2*Math.PI);
+    g.closePath();
+    g.fill();
+    // Body fill
+    g.fillRect(gh.x - 5, gh.y - 1, 10, 5);
+    // Scalloped feet (3 alternating-phase bumps)
+    g.beginPath();
+    if(phase === 0){
+      g.moveTo(gh.x - 5, gh.y + 4);
+      g.lineTo(gh.x - 5, gh.y + 3);
+      g.lineTo(gh.x - 4, gh.y + 5);
+      g.lineTo(gh.x - 2, gh.y + 3);
+      g.lineTo(gh.x,     gh.y + 5);
+      g.lineTo(gh.x + 2, gh.y + 3);
+      g.lineTo(gh.x + 4, gh.y + 5);
+      g.lineTo(gh.x + 5, gh.y + 3);
+      g.lineTo(gh.x + 5, gh.y + 4);
+    } else {
+      g.moveTo(gh.x - 5, gh.y + 4);
+      g.lineTo(gh.x - 5, gh.y + 5);
+      g.lineTo(gh.x - 3, gh.y + 3);
+      g.lineTo(gh.x - 1, gh.y + 5);
+      g.lineTo(gh.x + 1, gh.y + 3);
+      g.lineTo(gh.x + 3, gh.y + 5);
+      g.lineTo(gh.x + 5, gh.y + 3);
+      g.lineTo(gh.x + 5, gh.y + 4);
+    }
+    g.closePath();
+    g.fill();
+    // Frightened ghosts: white worried mouth & eyes
     if(gh.mode === "frightened"){
       g.fillStyle = "#ffffff";
-      g.fillRect(gh.x - 3, gh.y + 1, 1, 1);
-      g.fillRect(gh.x - 1, gh.y + 1, 1, 1);
-      g.fillRect(gh.x + 1, gh.y + 1, 1, 1);
-      g.fillRect(gh.x + 3, gh.y + 1, 1, 1);
+      // Eyes (small dots, no direction)
+      g.fillRect(gh.x - 3, gh.y - 2, 2, 2);
+      g.fillRect(gh.x + 1, gh.y - 2, 2, 2);
+      // Wavy zig-zag mouth
+      g.fillRect(gh.x - 4, gh.y + 1, 1, 1);
+      g.fillRect(gh.x - 3, gh.y + 2, 1, 1);
+      g.fillRect(gh.x - 2, gh.y + 1, 1, 1);
+      g.fillRect(gh.x - 1, gh.y + 2, 1, 1);
+      g.fillRect(gh.x,     gh.y + 1, 1, 1);
+      g.fillRect(gh.x + 1, gh.y + 2, 1, 1);
+      g.fillRect(gh.x + 2, gh.y + 1, 1, 1);
+      g.fillRect(gh.x + 3, gh.y + 2, 1, 1);
+    } else {
+      drawPacGhostEyes(gh.x, gh.y - 1, gh.dir);
     }
   }
   // "READY!" prompt at level start.
@@ -1695,7 +1823,7 @@ function froggerHomeReached(){
   beep(1200, 0.1, "square", 0.07);
   setTimeout(()=>beep(1600, 0.1, "square", 0.07), 100);
   setTimeout(()=>beep(2000, 0.15, "square", 0.07), 200);
-  transitionTo("invaders");
+  transitionTo("donkey-kong");
 }
 
 function updateFrogger(){
@@ -1829,39 +1957,68 @@ function updateFrogger(){
   if(frog.timer <= 0) froggerKill(false);
 }
 
+// Darken a "#rrggbb" hex string by a fixed amount — used for car roofs/cabs.
+function darken(hex){
+  if(!hex || hex[0] !== "#" || hex.length !== 7) return "#444";
+  const r = Math.max(0, parseInt(hex.slice(1,3), 16) - 64);
+  const G = Math.max(0, parseInt(hex.slice(3,5), 16) - 64);
+  const b = Math.max(0, parseInt(hex.slice(5,7), 16) - 64);
+  const h = n => n.toString(16).padStart(2, "0");
+  return "#" + h(r) + h(G) + h(b);
+}
+
 function drawFrogSprite(x, y, dir, color, hopping){
-  // Pixel-art frog drawn into a 16x16 cell, then rotated by direction.
+  // 14×14 pixel-art frog with chunky outline so the legs/eyes read at small
+  // sizes. Drawn facing "up" then rotated to match the frog's heading.
   g.save();
   g.translate(x + FROG_TILE/2, y + FROG_TILE/2);
   g.rotate(dir * Math.PI/2);
   g.translate(-FROG_TILE/2, -FROG_TILE/2);
-  g.fillStyle = color;
-  // Body
-  g.fillRect(4, 6, 8, 6);
-  g.fillRect(5, 5, 6, 1);
-  g.fillRect(5, 12, 6, 1);
-  // Eyes (a bit forward)
-  g.fillRect(3, 3, 3, 3);
-  g.fillRect(10, 3, 3, 3);
-  // Pupils
-  g.fillStyle = "#000";
-  g.fillRect(4, 4, 1, 1);
-  g.fillRect(11, 4, 1, 1);
-  // Body highlight
-  g.fillStyle = "#005500";
-  g.fillRect(6, 8, 4, 2);
-  // Legs depend on hop state — extended on hop, tucked otherwise.
+
+  // Dark outline as one-pixel halo
+  g.fillStyle = "#003300";
+
+  // Front legs (pointing forward / up). Tucked in idle, splayed mid-hop.
   g.fillStyle = color;
   if(hopping){
-    g.fillRect(1, 5, 2, 5);
-    g.fillRect(13, 5, 2, 5);
-    g.fillRect(3, 13, 2, 3);
-    g.fillRect(11, 13, 2, 3);
+    g.fillRect(1, 1, 3, 3);  g.fillRect(12, 1, 3, 3);  // outstretched front feet
+    g.fillRect(3, 4, 2, 2);  g.fillRect(11, 4, 2, 2);  // forearms
   } else {
-    g.fillRect(2, 7, 2, 4);
-    g.fillRect(12, 7, 2, 4);
-    g.fillRect(4, 12, 2, 2);
-    g.fillRect(10, 12, 2, 2);
+    g.fillRect(3, 3, 2, 2);  g.fillRect(11, 3, 2, 2);  // tucked front feet
+  }
+
+  // Body (rounded — mid wider than top/bottom)
+  g.fillRect(4, 5, 8, 7);
+  g.fillRect(3, 6, 10, 5);
+  // Body shadow
+  g.fillStyle = "#005500";
+  g.fillRect(5, 9, 6, 2);
+  g.fillRect(4, 10, 8, 1);
+
+  // Big bulging eyes (sit on top, classic frogger silhouette)
+  g.fillStyle = color;
+  g.fillRect(2, 4, 3, 3);
+  g.fillRect(11, 4, 3, 3);
+  g.fillStyle = "#003300";
+  g.fillRect(2, 7, 3, 1);
+  g.fillRect(11, 7, 3, 1);
+  // Pupils — track forward
+  g.fillStyle = "#000";
+  g.fillRect(3, 5, 1, 1);
+  g.fillRect(12, 5, 1, 1);
+  g.fillStyle = "#fff";
+  g.fillRect(3, 4, 1, 1);
+  g.fillRect(12, 4, 1, 1);
+
+  // Back legs — long when hopping, tucked into a crouch otherwise.
+  g.fillStyle = color;
+  if(hopping){
+    g.fillRect(0, 11, 3, 3);  g.fillRect(13, 11, 3, 3);  // outer thigh
+    g.fillRect(3, 13, 3, 2);  g.fillRect(10, 13, 3, 2);  // foot
+  } else {
+    g.fillRect(2, 12, 3, 2);
+    g.fillRect(11, 12, 3, 2);
+    g.fillRect(4, 13, 8, 1);
   }
   g.restore();
 }
@@ -1910,13 +2067,28 @@ function renderFrogger(){
     for(const e of lane.entities){
       const x = Math.round(e.x), y = e.y;
       if(def.kind === "log"){
-        g.fillStyle = "#aa6622";
+        // Log body
+        g.fillStyle = "#8a4d1f";
         g.fillRect(x, y+2, e.w, FROG_TILE-4);
-        g.fillStyle = "#774411";
-        g.fillRect(x, y+5, e.w, 1);
-        g.fillRect(x, y+10, e.w, 1);
-        g.fillStyle = "#cc8844";
-        g.fillRect(x, y+2, e.w, 1);
+        // Top highlight
+        g.fillStyle = "#c0814a";
+        g.fillRect(x, y+2, e.w, 2);
+        // Wood grain rings every ~16 px so the log feels like cut sections
+        g.fillStyle = "#5a2e10";
+        for(let s=FROG_TILE; s<e.w; s+=FROG_TILE){
+          g.fillRect(x+s-1, y+2, 1, FROG_TILE-4);
+        }
+        // Bark detail (a couple of horizontal slits)
+        g.fillStyle = "#653818";
+        g.fillRect(x+2, y+7, e.w-4, 1);
+        g.fillRect(x+1, y+11, e.w-2, 1);
+        // Rounded end caps with concentric grain rings
+        g.fillStyle = "#a86433";
+        g.fillRect(x-1, y+3, 1, FROG_TILE-6);
+        g.fillRect(x+e.w, y+3, 1, FROG_TILE-6);
+        g.fillStyle = "#5a2e10";
+        g.fillRect(x+1, y+5, 1, 6);
+        g.fillRect(x+e.w-2, y+5, 1, 6);
       } else if(def.kind === "turt"){
         const isDiving = e.diveT > 180;
         if(isDiving) continue;
@@ -1924,36 +2096,75 @@ function renderFrogger(){
         if(isWarning && Math.floor(frame/4) % 2 === 0) continue;
         for(let t=0;t<def.len;t++){
           const tx = x + t*FROG_TILE;
+          // Shell rim (darker)
+          g.fillStyle = "#0a6655";
+          g.beginPath(); g.arc(tx + 8, y + 8, 7, 0, Math.PI*2); g.fill();
+          // Shell body
           g.fillStyle = "#22ccaa";
-          g.beginPath();
-          g.arc(tx + 8, y + 8, 6, 0, Math.PI*2);
-          g.fill();
+          g.beginPath(); g.arc(tx + 8, y + 8, 6, 0, Math.PI*2); g.fill();
+          // Hex pattern on shell (3-segment look)
           g.fillStyle = "#118877";
-          g.fillRect(tx + 5, y + 5, 6, 6);
+          g.beginPath();
+          g.moveTo(tx + 8, y + 3);
+          g.lineTo(tx + 12, y + 6);
+          g.lineTo(tx + 12, y + 10);
+          g.lineTo(tx + 8, y + 13);
+          g.lineTo(tx + 4, y + 10);
+          g.lineTo(tx + 4, y + 6);
+          g.closePath(); g.fill();
           g.fillStyle = "#22ccaa";
-          // Little flippers
-          g.fillRect(tx + 2, y + 6, 2, 2);
-          g.fillRect(tx + 12, y + 6, 2, 2);
+          g.fillRect(tx + 7, y + 6, 2, 4);
+          // Head poking forward, flippers on the sides
+          g.fillStyle = "#22ccaa";
+          if(def.dir > 0) g.fillRect(tx + 13, y + 7, 2, 2);
+          else            g.fillRect(tx + 1, y + 7, 2, 2);
+          g.fillRect(tx + 1, y + 11, 3, 2);
+          g.fillRect(tx + 12, y + 11, 3, 2);
+          g.fillRect(tx + 1, y + 3, 3, 2);
+          g.fillRect(tx + 12, y + 3, 3, 2);
         }
       } else if(def.kind === "car" || def.kind === "truck"){
+        // Body
         g.fillStyle = e.color;
         g.fillRect(x+1, y+2, e.w-2, FROG_TILE-4);
-        // Direction indicator strip
-        g.fillStyle = "#fff";
-        if(def.dir > 0) g.fillRect(x+e.w-3, y+6, 2, 4);
-        else            g.fillRect(x+1,    y+6, 2, 4);
+        // Roof / cab darker
+        const darker = darken(e.color);
+        g.fillStyle = darker;
+        if(def.kind === "truck"){
+          // Bulldozer: cab + bed
+          if(def.dir > 0){
+            g.fillRect(x+e.w-FROG_TILE+1, y+3, FROG_TILE-3, 7);
+            g.fillStyle = "#aaccff";
+            g.fillRect(x+e.w-5, y+5, 3, 4); // windshield
+          } else {
+            g.fillRect(x+2, y+3, FROG_TILE-3, 7);
+            g.fillStyle = "#aaccff";
+            g.fillRect(x+2, y+5, 3, 4);
+          }
+          // Cargo bed grid
+          g.fillStyle = darker;
+          for(let s=4; s<e.w-FROG_TILE; s+=3){
+            const sx = (def.dir > 0) ? x + 1 + s : x + e.w - 1 - s;
+            g.fillRect(sx, y+5, 1, 6);
+          }
+        } else {
+          // Sedan: rooftop slightly inset and a windshield
+          g.fillStyle = darker;
+          g.fillRect(x+3, y+4, e.w-6, 5);
+          g.fillStyle = "#aaccff";
+          if(def.dir > 0) g.fillRect(x+e.w-6, y+5, 2, 3);
+          else            g.fillRect(x+4,    y+5, 2, 3);
+          // Headlight (forward)
+          g.fillStyle = "#ffffaa";
+          if(def.dir > 0) g.fillRect(x+e.w-2, y+7, 1, 2);
+          else            g.fillRect(x+1,    y+7, 1, 2);
+        }
         // Wheels
         g.fillStyle = "#000";
-        g.fillRect(x+1, y+1, 2, 2);
-        g.fillRect(x+e.w-3, y+1, 2, 2);
-        g.fillRect(x+1, y+FROG_TILE-3, 2, 2);
-        g.fillRect(x+e.w-3, y+FROG_TILE-3, 2, 2);
-        if(def.kind === "truck"){
-          // Cab on the leading edge
-          g.fillStyle = "#fff";
-          if(def.dir > 0) g.fillRect(x+e.w-FROG_TILE+2, y+4, FROG_TILE-4, 8);
-          else            g.fillRect(x+2, y+4, FROG_TILE-4, 8);
-        }
+        g.fillRect(x+2,        y+1, 3, 2);
+        g.fillRect(x+e.w-5,    y+1, 3, 2);
+        g.fillRect(x+2,        y+FROG_TILE-3, 3, 2);
+        g.fillRect(x+e.w-5,    y+FROG_TILE-3, 3, 2);
       }
     }
   }
@@ -1999,6 +2210,797 @@ function renderFrogger(){
   g.strokeRect(W-67, H-9, 62, 6);
 }
 
+// ---------- Donkey Kong ----------
+function initDonkeyKong(){
+  const g4 = DK_GIRDERS[4];
+  dk.player.x = Math.floor((g4.x1 + g4.x2) / 2) - DK_PW / 2;
+  dk.player.y = g4.y - DK_PH;
+  dk.player.vx = 0;
+  dk.player.vy = 0;
+  dk.player.onGround = true;
+  dk.player.onLadder = false;
+  dk.player.facing = 1;
+  dk.player.walkFrame = 0;
+  dk.barrels = [];
+  dk.barrelCD = 150;
+  dk.deadT = 0;
+  dk.jumpLatch = false;
+  dk.alive = true;
+}
+
+function dkKill(){
+  if(!dk.alive) return;
+  dk.alive = false;
+  dk.deadT = 90;
+  state.lives--;
+  state.mode = "dying";
+  beep(200, 0.12, "sawtooth", 0.08);
+  setTimeout(()=>beep(160, 0.12, "sawtooth", 0.08), 150);
+  setTimeout(()=>beep(120, 0.18, "sawtooth", 0.08), 300);
+}
+
+function dkRespawn(){
+  const g4 = DK_GIRDERS[4];
+  dk.player.x = Math.floor((g4.x1 + g4.x2) / 2) - DK_PW / 2;
+  dk.player.y = g4.y - DK_PH;
+  dk.player.vx = 0;
+  dk.player.vy = 0;
+  dk.player.onGround = true;
+  dk.player.onLadder = false;
+  dk.player.facing = 1;
+  dk.alive = true;
+  dk.barrels = [];
+  dk.barrelCD = 150;
+}
+
+function updateDonkeyKong(){
+  // DK throws barrels on a timer
+  if(state.mode === "play"){
+    dk.barrelCD--;
+    if(dk.barrelCD <= 0){
+      dk.barrels.push({
+        x: 22, y: DK_GIRDERS[0].y - DK_BH,
+        vy: 0, girder: 0, dir: 1,
+      });
+      dk.barrelCD = 130 + Math.floor(Math.random() * 80);
+      beep(220, 0.05, "sawtooth", 0.05);
+      setTimeout(()=>beep(180, 0.07, "sawtooth", 0.05), 80);
+    }
+  }
+
+  // Barrel physics
+  for(let i = dk.barrels.length - 1; i >= 0; i--){
+    const b = dk.barrels[i];
+    if(b.girder >= 0){
+      // Rolling on a girder
+      b.x += b.dir * 1.4;
+      b.y = DK_GIRDERS[b.girder].y - DK_BH;
+      const gr = DK_GIRDERS[b.girder];
+      if(b.dir > 0 && b.x + DK_BW >= gr.x2){
+        b.x = gr.x2 - DK_BW;  // clamp so x stays within lower girder ranges
+        b.girder = -1; b.vy = 0.5;
+      } else if(b.dir < 0 && b.x <= gr.x1){
+        b.x = gr.x1;           // clamp to left edge
+        b.girder = -1; b.vy = 0.5;
+      }
+    } else {
+      // Falling
+      b.vy = Math.min(b.vy + 0.5, 6);
+      b.y += b.vy;
+      // Check landing on a girder
+      for(let j = 0; j < DK_GIRDERS.length; j++){
+        const gr = DK_GIRDERS[j];
+        if(b.vy > 0 && b.y + DK_BH >= gr.y && b.y + DK_BH <= gr.y + 9 &&
+           b.x + DK_BW > gr.x1 && b.x < gr.x2){
+          b.girder = j;
+          b.y = gr.y - DK_BH;
+          b.vy = 0;
+          // Even-indexed girders roll right, odd roll left — matches the stagger layout
+          b.dir = (j % 2 === 0) ? 1 : -1;
+          break;
+        }
+      }
+      if(b.y > H + 20) dk.barrels.splice(i, 1);
+    }
+  }
+
+  // Dying countdown
+  if(state.mode === "dying"){
+    dk.deadT--;
+    if(dk.deadT <= 0){
+      if(state.lives <= 0){
+        saveHi();
+        state.mode = "gameover";
+        state.gameoverT = 0;
+        state.restartArmed = false;
+      } else {
+        dkRespawn();
+        state.mode = "play";
+      }
+    }
+    return;
+  }
+  if(state.mode !== "play") return;
+
+  const p = dk.player;
+
+  // Ladder detection — snap x to ladder when close enough
+  let onLadder = null;
+  const pcx = p.x + DK_PW / 2;
+  for(const l of DK_LADDERS){
+    if(Math.abs(pcx - l.x) < 7 && p.y + DK_PH > l.y1 + 4 && p.y < l.y2){
+      onLadder = l;
+      break;
+    }
+  }
+  p.onLadder = !!onLadder;
+
+  // Horizontal movement (disabled while climbing)
+  if(!p.onLadder){
+    if(keys["ArrowLeft"])       { p.vx = -1.5; p.facing = -1; }
+    else if(keys["ArrowRight"]) { p.vx =  1.5; p.facing =  1; }
+    else                          p.vx = 0;
+  } else {
+    p.vx = 0;
+    // Smoothly snap player x to ladder center
+    p.x += (onLadder.x - DK_PW / 2 - p.x) * 0.3;
+  }
+
+  // Ladder climbing
+  if(p.onLadder){
+    if(keys["ArrowUp"])        { p.y -= 1.2; p.vy = 0; }
+    else if(keys["ArrowDown"]) { p.y += 1.2; p.vy = 0; }
+  }
+
+  // Jump (only when grounded and not climbing)
+  if(keys["Space"] && !dk.jumpLatch && p.onGround && !p.onLadder){
+    dk.jumpLatch = true;
+    p.vy = -4.5;
+    p.onGround = false;
+    beep(600, 0.05, "square", 0.04);
+  }
+  if(!keys["Space"]) dk.jumpLatch = false;
+
+  // Gravity + position integration
+  if(!p.onLadder) p.vy += 0.4;
+  p.y += p.vy;
+  p.x += p.vx;
+
+  // Girder collision (landing from above only)
+  p.onGround = false;
+  for(const gr of DK_GIRDERS){
+    const feet = p.y + DK_PH;
+    if(p.x + DK_PW > gr.x1 && p.x < gr.x2 &&
+       feet >= gr.y && feet <= gr.y + 6 && p.vy >= 0){
+      p.y = gr.y - DK_PH;
+      p.vy = 0;
+      p.onGround = true;
+      break;
+    }
+  }
+
+  // Screen bounds
+  if(p.x < 0) p.x = 0;
+  if(p.x + DK_PW > W) p.x = W - DK_PW;
+  // Fell off bottom
+  if(p.y > H) { dkKill(); return; }
+
+  // Walk animation counter
+  if(Math.abs(p.vx) > 0.1 && p.onGround) p.walkFrame++;
+
+  // Barrel-player collision (slightly forgiving hitbox so jumping over is satisfying)
+  for(const b of dk.barrels){
+    const ddx = Math.abs((b.x + DK_BW/2) - (p.x + DK_PW/2));
+    const ddy = Math.abs((b.y + DK_BH/2) - (p.y + DK_PH/2));
+    if(ddx < 7 && ddy < 8){ dkKill(); return; }
+  }
+
+  // Win: player climbed all the way to the top platform (G0)
+  if(p.onGround && p.y + DK_PH <= DK_GIRDERS[0].y + 1){
+    state.score += 1000;
+    beep(523, 0.08, "square", 0.06);
+    setTimeout(()=>beep(659, 0.08, "square", 0.06), 100);
+    setTimeout(()=>beep(784, 0.08, "square", 0.06), 200);
+    setTimeout(()=>beep(1047, 0.15, "square", 0.06), 300);
+    transitionTo("street-fighter");
+  }
+}
+
+function renderDonkeyKong(){
+  g.fillStyle = "#000";
+  g.fillRect(0, 0, W, H);
+
+  // Girders (classic red-orange steel beams)
+  for(const gr of DK_GIRDERS){
+    g.fillStyle = "#cc4400";
+    g.fillRect(gr.x1, gr.y, gr.x2 - gr.x1, 4);
+    g.fillStyle = "#ff7722";
+    for(let rx = gr.x1 + 8; rx < gr.x2 - 2; rx += 16){
+      g.fillRect(rx, gr.y + 1, 2, 2);  // rivets
+    }
+  }
+
+  // Ladders (yellow runged)
+  for(const l of DK_LADDERS){
+    g.fillStyle = "#ddcc55";
+    g.fillRect(l.x - 3, l.y1, 2, l.y2 - l.y1);  // left rail
+    g.fillRect(l.x + 1, l.y1, 2, l.y2 - l.y1);  // right rail
+    g.fillStyle = "#bbaa33";
+    for(let ry = l.y1 + 4; ry < l.y2; ry += 8){
+      g.fillRect(l.x - 3, ry, 6, 2);  // rung
+    }
+  }
+
+  // Donkey Kong (top-left of G0)
+  const g0 = DK_GIRDERS[0];
+  const dkX = 10, dkY = g0.y - 20;
+  g.fillStyle = "#884400";
+  g.fillRect(dkX,     dkY + 4,  18, 14);  // body
+  g.fillRect(dkX + 2, dkY,      14,  6);  // head
+  g.fillStyle = "#ffcc88";
+  g.fillRect(dkX + 4, dkY + 1, 10, 4);   // face
+  g.fillStyle = "#000";
+  g.fillRect(dkX + 5,  dkY + 2, 2, 2);   // left eye
+  g.fillRect(dkX + 11, dkY + 2, 2, 2);   // right eye
+  // Alternating arm animation
+  const dkArmUp = Math.floor(frame / 30) % 2 === 0;
+  g.fillStyle = "#884400";
+  if(dkArmUp){
+    g.fillRect(dkX - 3, dkY,      3, 8);   // left arm up
+    g.fillRect(dkX + 18, dkY + 8, 3, 8);  // right arm down
+  } else {
+    g.fillRect(dkX - 3, dkY + 8, 3, 8);   // left arm down
+    g.fillRect(dkX + 18, dkY,    3, 8);   // right arm up
+  }
+
+  // Pauline (far right of G0 — the rescue target)
+  const pauX = 196, pauY = g0.y - 14;
+  g.fillStyle = "#ff4488";
+  g.fillRect(pauX, pauY + 6, 8, 8);       // dress
+  g.fillStyle = "#ffcc88";
+  g.fillRect(pauX + 1, pauY, 6, 6);       // head
+  g.fillStyle = "#994400";
+  g.fillRect(pauX, pauY - 2, 8, 3);       // hair
+  // Pauline waves for help
+  if(Math.floor(frame / 20) % 2 === 0){
+    g.fillStyle = "#ffcc88";
+    g.fillRect(pauX + 8, pauY + 1, 3, 4); // waving arm
+  }
+
+  // Barrels (rolling cylinders)
+  for(const b of dk.barrels){
+    const bx = Math.round(b.x), by = Math.round(b.y);
+    g.fillStyle = "#aa6622";
+    g.beginPath();
+    g.arc(bx + DK_BW/2, by + DK_BH/2, DK_BW/2 + 0.5, 0, Math.PI*2);
+    g.fill();
+    // Rotating stave line for rolling effect
+    g.save();
+    g.translate(bx + DK_BW/2, by + DK_BH/2);
+    g.rotate(frame * 0.15 * b.dir);
+    g.fillStyle = "#774411";
+    g.fillRect(-DK_BW/2, -1, DK_BW, 2);
+    g.restore();
+  }
+
+  // Jumpman (player)
+  if(dk.alive || state.mode === "dying"){
+    const p = dk.player;
+    const px = Math.round(p.x), py = Math.round(p.y);
+    if(state.mode === "dying"){
+      // Flashing death
+      if(Math.floor(dk.deadT / 6) % 2 === 0){
+        g.fillStyle = "#ff4444";
+        g.fillRect(px, py, DK_PW, DK_PH);
+      }
+    } else {
+      const fl = p.facing < 0;
+      // Hat
+      g.fillStyle = "#cc2222";
+      g.fillRect(px + 1, py, 6, 3);
+      // Hair
+      g.fillStyle = "#994400";
+      g.fillRect(fl ? px + 5 : px + 1, py + 1, 2, 2);
+      // Face
+      g.fillStyle = "#ffcc88";
+      g.fillRect(fl ? px + 1 : px + 2, py + 3, 5, 4);
+      // Overalls
+      g.fillStyle = "#3366cc";
+      g.fillRect(px, py + 7, DK_PW, 5);
+      // Feet (walking animation)
+      g.fillStyle = "#884400";
+      if(p.onGround && Math.abs(p.vx) > 0.1){
+        const step = Math.floor(p.walkFrame / 4) % 2;
+        g.fillRect(px + (step ? 0 : 4), py + DK_PH - 2, 3, 2);
+        g.fillRect(px + (step ? 4 : 0), py + DK_PH - 1, 3, 1);
+      } else {
+        g.fillRect(px, py + DK_PH - 2, 3, 2);
+        g.fillRect(px + 4, py + DK_PH - 2, 3, 2);
+      }
+    }
+  }
+}
+
+// ---------- Street Fighter ----------
+function initSF(){
+  sf.player = makeSFFighter(56,    1, "RYU", {skin:"#ddc090", gi:"#ffffff", hair:"#553300"});
+  sf.ai     = makeSFFighter(W-70, -1, "KEN", {skin:"#ddc090", gi:"#dd2222", hair:"#ffcc44"});
+  sf.projectiles = [];
+  sf.roundT = 99 * 60;     // 99 seconds at 60Hz
+  sf.endT = 0;
+  sf.winner = null;
+  sf.hitstop = 0;
+  sf.intro = 120;          // ROUND 1 then FIGHT!
+}
+
+function sfOpponentAttacking(){
+  return sf.ai.state === "punch" || sf.ai.state === "kick" || sf.ai.state === "hadouken";
+}
+
+// Look for a quarter-circle-forward motion in the input buffer:
+// down → down-forward → forward, all within ~30 frames.
+function sfHadoukenInput(buf){
+  let saw1 = -1, saw2 = -1;
+  for(let i=0;i<buf.length;i++){
+    const v = buf[i];
+    if(v === 1 && saw1 < 0) saw1 = i;
+    else if(v === 2 && saw1 >= 0 && saw2 < 0) saw2 = i;
+    else if(v === 3 && saw2 >= 0){ buf.length = 0; return true; }
+  }
+  return false;
+}
+
+function sfPlayerInput(){
+  const f = sf.player;
+  if(f.state === "knockdown" || f.hitstun > 0 || f.blockstun > 0) return;
+
+  // Always face the AI.
+  const fwd = sf.ai.x > f.x ? 1 : -1;
+  f.facing = fwd;
+
+  // Buffer directional input (0=neutral, 1=down, 2=down-forward, 3=forward).
+  let dirCode = 0;
+  if(keys["ArrowDown"]){
+    if((fwd > 0 && keys["ArrowRight"]) || (fwd < 0 && keys["ArrowLeft"])) dirCode = 2;
+    else dirCode = 1;
+  } else if((fwd > 0 && keys["ArrowRight"]) || (fwd < 0 && keys["ArrowLeft"])){
+    dirCode = 3;
+  }
+  f.inputBuf.push(dirCode);
+  if(f.inputBuf.length > 30) f.inputBuf.shift();
+
+  // Only allow new actions from neutral states.
+  const neutral = (f.state === "idle" || f.state === "walk" || f.state === "crouch" || f.state === "block");
+  if(!neutral) return;
+
+  // Crouch / jump / walk / block (ground states only).
+  if(f.grounded){
+    if(keys["ArrowDown"]){
+      f.state = "crouch"; f.stateT = 0; f.vx = 0;
+    } else if(keys["ArrowUp"]){
+      f.vy = SF_JUMP_VY;
+      f.grounded = false;
+      f.state = "jump"; f.stateT = 0;
+      if(keys["ArrowRight"])      f.vx =  1.5;
+      else if(keys["ArrowLeft"])  f.vx = -1.5;
+      else                        f.vx =  0;
+      beep(300, 0.05, "square", 0.04);
+    } else {
+      const back = (fwd > 0 && keys["ArrowLeft"]) || (fwd < 0 && keys["ArrowRight"]);
+      if(back && sfOpponentAttacking()){
+        f.state = "block"; f.stateT = 0; f.vx = 0;
+      } else if(keys["ArrowRight"]){
+        f.vx = SF_WALK;  f.state = "walk"; f.stateT = 0;
+      } else if(keys["ArrowLeft"]){
+        f.vx = -SF_WALK; f.state = "walk"; f.stateT = 0;
+      } else {
+        f.vx = 0;
+        if(f.state !== "idle"){ f.state = "idle"; f.stateT = 0; }
+      }
+    }
+  }
+
+  // Attacks (one trigger per keydown — actionLatch holds until key released).
+  const punch = keys["KeyZ"] || keys["Space"];
+  const kick  = keys["KeyX"];
+  if(!f.actionLatch){
+    if(punch){
+      if(sfHadoukenInput(f.inputBuf) && f.hadoukenCD <= 0){
+        f.state = "hadouken"; f.stateT = 0; f.vx = 0; f.hadoukenCD = 60;
+        f.actionLatch = true;
+        beep(180, 0.18, "sawtooth", 0.07);
+      } else {
+        f.state = "punch"; f.stateT = 0; f.vx = 0;
+        f.actionLatch = true;
+        beep(440, 0.04, "square", 0.04);
+      }
+    } else if(kick){
+      f.state = "kick"; f.stateT = 0; f.vx = 0;
+      f.actionLatch = true;
+      beep(280, 0.05, "square", 0.04);
+    }
+  }
+  if(!punch && !kick) f.actionLatch = false;
+}
+
+function sfStepFighter(f){
+  if(f.hadoukenCD > 0) f.hadoukenCD--;
+  if(f.hitstun > 0)    f.hitstun--;
+  if(f.blockstun > 0)  f.blockstun--;
+  f.stateT++;
+
+  if(!f.grounded){
+    f.vy += SF_GRAVITY;
+    f.y += f.vy;
+    f.x += f.vx;
+    if(f.y >= SF_FLOOR_Y){
+      f.y = SF_FLOOR_Y;
+      f.vy = 0; f.vx = 0;
+      f.grounded = true;
+      f.state = "idle"; f.stateT = 0;
+    }
+  } else {
+    f.x += f.vx;
+  }
+  if(f.x < 8)                     f.x = 8;
+  if(f.x > W - 8 - SF_BODY_W)     f.x = W - 8 - SF_BODY_W;
+
+  // State timer transitions
+  if(f.state === "punch" && f.stateT > 14){ f.state = "idle"; f.stateT = 0; }
+  else if(f.state === "kick" && f.stateT > 22){ f.state = "idle"; f.stateT = 0; }
+  else if(f.state === "hadouken" && f.stateT === 14){
+    sf.projectiles.push({
+      x: f.x + (f.facing > 0 ? SF_BODY_W : 0),
+      y: f.y - 18,
+      vx: SF_HADO_SPEED * f.facing,
+      owner: f === sf.player ? "player" : "ai",
+      t: 0,
+    });
+  } else if(f.state === "hadouken" && f.stateT > 36){ f.state = "idle"; f.stateT = 0; }
+  else if(f.state === "block" && f.blockstun <= 0 && !sfOpponentAttacking()){ f.state = "idle"; f.stateT = 0; }
+  else if(f.state === "hit" && f.hitstun <= 0){ f.state = "idle"; f.stateT = 0; }
+}
+
+function sfStepProjectiles(){
+  for(let i=sf.projectiles.length-1;i>=0;i--){
+    const p = sf.projectiles[i];
+    p.x += p.vx; p.t++;
+    if(p.x < -10 || p.x > W + 10) sf.projectiles.splice(i,1);
+  }
+}
+
+function sfHurtbox(f){
+  const h = (f.state === "crouch") ? SF_CROUCH_H : SF_BODY_H;
+  return { x: f.x, y: f.y - h, w: SF_BODY_W, h };
+}
+
+function sfHitbox(f){
+  if(f.state === "punch" && f.stateT >= 4 && f.stateT <= 9){
+    return { x: f.facing > 0 ? f.x + SF_BODY_W : f.x - 14, y: f.y - 26, w: 14, h: 6, dmg: 6, kb: 1 };
+  }
+  if(f.state === "kick" && f.stateT >= 6 && f.stateT <= 14){
+    return { x: f.facing > 0 ? f.x + SF_BODY_W - 2 : f.x - 18, y: f.y - 14, w: 20, h: 10, dmg: 11, kb: 2 };
+  }
+  return null;
+}
+
+function sfRectHit(a, b){
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function sfCheckHits(){
+  // Melee
+  for(const [att, def] of [[sf.player, sf.ai], [sf.ai, sf.player]]){
+    const hb = sfHitbox(att);
+    if(!hb) continue;
+    const hr = sfHurtbox(def);
+    if(sfRectHit(hb, hr) && def.hitstun <= 0 && def.blockstun <= 0){
+      const blocked = def.state === "block";
+      const dmg = blocked ? Math.max(1, Math.ceil(hb.dmg * 0.2)) : hb.dmg;
+      def.hp = Math.max(0, def.hp - dmg);
+      if(blocked){
+        def.blockstun = 12;
+      } else {
+        def.state = "hit"; def.stateT = 0; def.hitstun = 18;
+        def.vx = hb.kb * att.facing * 0.5;
+        beep(140, 0.1, "sawtooth", 0.07);
+      }
+      sf.hitstop = 6;
+      att.state = "idle"; att.stateT = 0;
+      break;
+    }
+  }
+  // Hadoukens
+  for(let i=sf.projectiles.length-1;i>=0;i--){
+    const p = sf.projectiles[i];
+    const target = (p.owner === "player") ? sf.ai : sf.player;
+    const tr = sfHurtbox(target);
+    const pr = { x: p.x - 6, y: p.y - 4, w: 12, h: 8 };
+    if(sfRectHit(pr, tr) && target.hitstun <= 0 && target.blockstun <= 0){
+      const blocked = target.state === "block";
+      const dmg = blocked ? 4 : 14;
+      target.hp = Math.max(0, target.hp - dmg);
+      if(!blocked){
+        target.state = "hit"; target.stateT = 0; target.hitstun = 24;
+        target.vx = 1.5 * (p.vx > 0 ? 1 : -1);
+        beep(120, 0.18, "sawtooth", 0.08);
+      } else target.blockstun = 18;
+      sf.hitstop = 6;
+      sf.projectiles.splice(i,1);
+    }
+  }
+}
+
+function sfAITick(){
+  const f = sf.ai;
+  if(f.state === "knockdown" || f.hitstun > 0 || f.blockstun > 0) return;
+  f.facing = (sf.player.x < f.x) ? -1 : 1;
+  const dist = Math.abs(f.x - sf.player.x);
+
+  // Block reactively to close attacks.
+  if((sf.player.state === "punch" || sf.player.state === "kick") && dist < 32 && Math.random() < 0.35){
+    f.state = "block"; f.stateT = 0; f.vx = 0; return;
+  }
+  // Jump over hadoukens occasionally.
+  for(const p of sf.projectiles){
+    if(p.owner === "player" && Math.abs(p.x - f.x) < 40 && f.grounded && Math.random() < 0.3){
+      f.vy = SF_JUMP_VY; f.grounded = false; f.state = "jump"; f.stateT = 0; f.vx = 0;
+      return;
+    }
+  }
+
+  if(f.state !== "idle" && f.state !== "walk") return;
+  f.aiTimer--;
+  if(f.aiTimer > 0){
+    if(f.aiAction === "forward")      { f.vx = SF_WALK * f.facing;  if(f.state !== "walk"){ f.state = "walk"; f.stateT = 0; } }
+    else if(f.aiAction === "back")    { f.vx = -SF_WALK * f.facing; if(f.state !== "walk"){ f.state = "walk"; f.stateT = 0; } }
+    else                              { f.vx = 0; if(f.state !== "idle"){ f.state = "idle"; f.stateT = 0; } }
+    return;
+  }
+  // Choose a new action.
+  f.aiTimer = 30 + Math.floor(Math.random() * 50);
+  if(dist < 28){
+    const r = Math.random();
+    if(r < 0.5){ f.state = "punch"; f.stateT = 0; f.vx = 0; beep(440, 0.04, "square", 0.04); }
+    else if(r < 0.85){ f.state = "kick"; f.stateT = 0; f.vx = 0; beep(280, 0.05, "square", 0.04); }
+    else { f.aiAction = "back"; }
+  } else if(dist > 90){
+    if(Math.random() < 0.35 && f.hadoukenCD <= 0){
+      f.state = "hadouken"; f.stateT = 0; f.vx = 0; f.hadoukenCD = 90;
+      beep(180, 0.18, "sawtooth", 0.06);
+    } else f.aiAction = "forward";
+  } else {
+    f.aiAction = (Math.random() < 0.7) ? "forward" : "back";
+  }
+}
+
+function updateSF(){
+  if(state.mode !== "play" && state.mode !== "dying") return;
+  // Brief impact freeze on hits — gives weight without complicating state.
+  if(sf.hitstop > 0){ sf.hitstop--; return; }
+
+  if(sf.intro > 0){ sf.intro--; return; }
+  if(sf.endT > 0){
+    sf.endT--;
+    if(sf.endT <= 0){
+      if(sf.winner === "player"){
+        // Stage clear — back to Invaders for the next loop.
+        transitionTo("invaders");
+      } else {
+        // Player lost the bout — costs a life. If lives remain, restart the
+        // round; otherwise game-over with the rest of the cycle ending.
+        state.lives--;
+        if(state.lives <= 0){
+          saveHi();
+          state.mode = "gameover";
+          state.gameoverT = 0;
+          state.restartArmed = false;
+        } else {
+          initSF();
+        }
+      }
+    }
+    return;
+  }
+
+  sfPlayerInput();
+  sfAITick();
+  sfStepFighter(sf.player);
+  sfStepFighter(sf.ai);
+  sfStepProjectiles();
+  sfCheckHits();
+
+  sf.roundT--;
+
+  if(!sf.winner){
+    if(sf.player.hp <= 0){
+      sf.winner = "ai"; sf.endT = 180;
+      noise(0.6, 0.16);
+    } else if(sf.ai.hp <= 0){
+      sf.winner = "player"; sf.endT = 180;
+      state.score += 1000 + Math.floor(sf.roundT / 60) * 10;
+      beep(523, 0.1, "square", 0.06);
+      setTimeout(()=>beep(659, 0.1, "square", 0.06), 100);
+      setTimeout(()=>beep(784, 0.15, "square", 0.06), 200);
+    } else if(sf.roundT <= 0){
+      sf.winner = (sf.player.hp >= sf.ai.hp) ? "player" : "ai";
+      sf.endT = 180;
+    }
+  }
+}
+
+function drawSFFighter(f){
+  const x = Math.round(f.x), y = Math.round(f.y);
+  const dir = f.facing;
+  const crouch = (f.state === "crouch");
+  const head_y = crouch ? y - 18 : y - 28;
+  const body_y = crouch ? y - 14 : y - 22;
+
+  // Shadow
+  g.fillStyle = "rgba(0,0,0,0.4)";
+  g.fillRect(x, y - 1, SF_BODY_W, 2);
+
+  // Legs
+  g.fillStyle = f.giColor;
+  if(crouch){
+    g.fillRect(x + 1, y - 8, 5, 8);
+    g.fillRect(x + 8, y - 8, 5, 8);
+  } else if(f.state === "kick" && f.stateT >= 4 && f.stateT <= 16){
+    g.fillRect(x + 5, y - 14, 4, 14);
+    if(dir > 0) g.fillRect(x + SF_BODY_W - 2, y - 12, 14, 4);
+    else        g.fillRect(x - 12, y - 12, 14, 4);
+    g.fillStyle = f.color;
+    if(dir > 0) g.fillRect(x + SF_BODY_W + 12, y - 13, 4, 6);
+    else        g.fillRect(x - 16, y - 13, 4, 6);
+    g.fillStyle = f.giColor;
+  } else if(f.state === "jump" || !f.grounded){
+    g.fillRect(x + 2, y - 10, 4, 6);
+    g.fillRect(x + 8, y - 10, 4, 6);
+  } else {
+    g.fillRect(x + 2, y - 14, 4, 14);
+    g.fillRect(x + 8, y - 14, 4, 14);
+    if(f.state === "walk"){
+      const w = Math.floor(f.stateT/6) % 2;
+      if(w) g.fillRect(x + 2, y - 4, 4, 4); else g.fillRect(x + 8, y - 4, 4, 4);
+    }
+  }
+
+  // Body / gi
+  g.fillStyle = f.giColor;
+  g.fillRect(x + 1, body_y, SF_BODY_W - 2, crouch ? 6 : 12);
+  // Belt
+  g.fillStyle = "#000";
+  g.fillRect(x + 1, body_y + (crouch ? 4 : 10), SF_BODY_W - 2, 2);
+  // Open chest
+  g.fillStyle = f.color;
+  g.fillRect(x + SF_BODY_W/2 - 1, body_y, 2, crouch ? 4 : 8);
+
+  // Arms
+  g.fillStyle = f.giColor;
+  if(f.state === "punch" && f.stateT >= 2 && f.stateT <= 11){
+    if(dir > 0) g.fillRect(x + SF_BODY_W - 1, body_y + 2, 12, 4);
+    else        g.fillRect(x - 11, body_y + 2, 12, 4);
+    g.fillStyle = f.color;
+    if(dir > 0) g.fillRect(x + SF_BODY_W + 11, body_y + 1, 4, 6);
+    else        g.fillRect(x - 14, body_y + 1, 4, 6);
+  } else if(f.state === "hadouken"){
+    if(f.stateT < 14){
+      // Pulling back
+      if(dir > 0) g.fillRect(x - 4, body_y + 4, 6, 4);
+      else        g.fillRect(x + SF_BODY_W - 2, body_y + 4, 6, 4);
+    } else {
+      // Releasing (extended)
+      if(dir > 0) g.fillRect(x + SF_BODY_W - 1, body_y + 2, 14, 6);
+      else        g.fillRect(x - 13, body_y + 2, 14, 6);
+      g.fillStyle = f.color;
+      if(dir > 0) g.fillRect(x + SF_BODY_W + 13, body_y + 1, 3, 8);
+      else        g.fillRect(x - 16, body_y + 1, 3, 8);
+    }
+  } else if(f.state === "block"){
+    if(dir > 0){
+      g.fillRect(x + SF_BODY_W - 2, body_y + 1, 6, 4);
+      g.fillRect(x + SF_BODY_W - 2, body_y + 6, 6, 4);
+    } else {
+      g.fillRect(x - 4, body_y + 1, 6, 4);
+      g.fillRect(x - 4, body_y + 6, 6, 4);
+    }
+  } else if(f.state === "hit"){
+    g.fillRect(x - 3, body_y - 1, 4, 6);
+    g.fillRect(x + SF_BODY_W - 1, body_y - 1, 4, 6);
+  } else {
+    g.fillRect(x - 1, body_y + 2, 3, 8);
+    g.fillRect(x + SF_BODY_W - 2, body_y + 2, 3, 8);
+  }
+
+  // Head
+  g.fillStyle = f.color;
+  g.fillRect(x + 2, head_y, SF_BODY_W - 4, 8);
+  // Hair
+  g.fillStyle = f.hairColor;
+  g.fillRect(x + 1, head_y - 1, SF_BODY_W - 2, 3);
+  // Headband (white) for the player.
+  if(f === sf.player){
+    g.fillStyle = "#ffffff";
+    g.fillRect(x + 1, head_y + 2, SF_BODY_W - 2, 1);
+  }
+  // Eye facing forward
+  g.fillStyle = "#000";
+  if(dir > 0) g.fillRect(x + SF_BODY_W - 5, head_y + 4, 1, 1);
+  else        g.fillRect(x + 4,             head_y + 4, 1, 1);
+  // Hit grimace
+  if(f.state === "hit"){
+    g.fillRect(x + SF_BODY_W/2 - 1, head_y + 6, 2, 1);
+  }
+}
+
+function drawHadouken(p){
+  const phase = Math.floor(p.t / 4) % 2;
+  g.fillStyle = phase ? "#ffffff" : "#aaccff";
+  g.beginPath(); g.arc(p.x, p.y, 6, 0, Math.PI*2); g.fill();
+  g.fillStyle = phase ? "#88ddff" : "#ffffff";
+  g.beginPath(); g.arc(p.x - p.vx*0.5, p.y, 4, 0, Math.PI*2); g.fill();
+  g.fillStyle = "#ffffff";
+  g.beginPath(); g.arc(p.x - p.vx*1.0, p.y, 2, 0, Math.PI*2); g.fill();
+}
+
+function drawSFHealthBar(x, y, hp, maxHp, name, rightAlign){
+  g.fillStyle = "#222";
+  g.fillRect(x, y, 80, 6);
+  const ratio = Math.max(0, hp / maxHp);
+  const w = Math.floor(80 * ratio);
+  let color = "#ffff00";
+  if(ratio < 0.5)  color = "#ff8800";
+  if(ratio < 0.25) color = "#ff2222";
+  g.fillStyle = color;
+  if(rightAlign) g.fillRect(x + 80 - w, y, w, 6);
+  else           g.fillRect(x,          y, w, 6);
+  g.strokeStyle = "#fff";
+  g.lineWidth = 1;
+  g.strokeRect(x + 0.5, y + 0.5, 79, 5);
+  drawText(name, rightAlign ? x + 80 - name.length*6 : x, y - 9, C_WHITE);
+}
+
+function renderSF(){
+  // Background: dusk sky + skyline + earthen floor.
+  g.fillStyle = "#1a1a44"; g.fillRect(0, 0, W, H);
+  g.fillStyle = "#0a0a22";
+  for(let x=0;x<W;x+=8){
+    const h = 8 + ((x*7919) % 28);
+    g.fillRect(x, 80 - h, 6, h);
+  }
+  // Distant sun
+  g.fillStyle = "#cc4422";
+  g.beginPath(); g.arc(W*0.7, 70, 10, 0, Math.PI*2); g.fill();
+  // Floor
+  g.fillStyle = "#664422"; g.fillRect(0, SF_FLOOR_Y, W, H - SF_FLOOR_Y);
+  g.fillStyle = "#553311"; for(let x=0;x<W;x+=12) g.fillRect(x, SF_FLOOR_Y, 6, 1);
+
+  // Health bars + timer
+  drawSFHealthBar(8, 30, sf.player.hp, sf.player.maxHp, "RYU", false);
+  drawSFHealthBar(W - 88, 30, sf.ai.hp, sf.ai.maxHp, "KEN", true);
+  const sec = Math.max(0, Math.ceil(sf.roundT / 60));
+  drawText(String(sec).padStart(2,"0"), W/2 - 6, 30, sec < 10 ? C_RED : C_WHITE);
+
+  // Fighters
+  drawSFFighter(sf.player);
+  drawSFFighter(sf.ai);
+
+  // Projectiles
+  for(const p of sf.projectiles) drawHadouken(p);
+
+  // Intro / outro text
+  if(sf.intro > 0){
+    const txt = sf.intro > 60 ? "ROUND 1" : "FIGHT!";
+    const blink = Math.floor(frame/8) % 2 === 0;
+    drawText(txt, W/2 - txt.length*3, H/2 - 4, blink ? C_RED : C_WHITE);
+  }
+  if(sf.winner){
+    const txt = (sf.winner === "player") ? "K.O.!" : "YOU LOSE";
+    drawText(txt, W/2 - txt.length*3, H/2 - 4, C_RED);
+    drawText(sf.winner === "player" ? "WINNER" : "TRY AGAIN", W/2 - 27, H/2 + 6, C_WHITE);
+  }
+}
+
 // ---------- Inter-game transitions ----------
 function transitionTo(target){
   state.mode = "transition";
@@ -2010,6 +3012,10 @@ function transitionTo(target){
     state.transitionLabel = "STAGE " + state.level + "  PAC-MAN";
   } else if(target === "frogger"){
     state.transitionLabel = "STAGE " + state.level + "  FROGGER";
+  } else if(target === "donkey-kong"){
+    state.transitionLabel = "STAGE " + state.level + "  DONKEY KONG";
+  } else if(target === "street-fighter"){
+    state.transitionLabel = "STAGE " + state.level + "  STREET FIGHTER";
   } else {
     // Returning to invaders bumps the round counter.
     state.transitionLabel = "WAVE " + (state.level + 1) + "  INVADERS";
@@ -2036,6 +3042,14 @@ function finishTransition(){
   } else if(state.transitionTo === "frogger"){
     state.gameType = "frogger";
     initFrogger();
+    state.mode = "play";
+  } else if(state.transitionTo === "donkey-kong"){
+    state.gameType = "donkey-kong";
+    initDonkeyKong();
+    state.mode = "play";
+  } else if(state.transitionTo === "street-fighter"){
+    state.gameType = "street-fighter";
+    initSF();
     state.mode = "play";
   } else {
     state.gameType = "invaders";
@@ -2087,6 +3101,11 @@ function startGame(){
   frog.homes = [false,false,false,false,false];
   frog.lanes = [];
   frog.alive = true;
+  // Street Fighter state — fully rebuilt on initSF, but clear projectiles.
+  sf.projectiles = [];
+  sf.winner = null;
+  sf.endT = 0;
+  sf.intro = 0;
   buildBunkers();
   buildFleet(state.level);
 }
@@ -2179,6 +3198,16 @@ function update(){
 
   if(state.gameType === "frogger"){
     updateFrogger();
+    return;
+  }
+
+  if(state.gameType === "donkey-kong"){
+    updateDonkeyKong();
+    return;
+  }
+
+  if(state.gameType === "street-fighter"){
+    updateSF();
     return;
   }
 
@@ -2655,6 +3684,10 @@ function render(){
       renderPacman();
     } else if(state.gameType === "frogger"){
       renderFrogger();
+    } else if(state.gameType === "donkey-kong"){
+      renderDonkeyKong();
+    } else if(state.gameType === "street-fighter"){
+      renderSF();
     }
 
     // Lives display (shared HUD) — Pac-Man hides this since the maze fills
@@ -2672,6 +3705,32 @@ function render(){
           g.fillRect(2, 3, 6, 4);
           g.fillRect(1, 2, 2, 2); g.fillRect(7, 2, 2, 2);
           g.fillRect(0, 4, 2, 3); g.fillRect(8, 4, 2, 3);
+          g.restore();
+        } else if(state.gameType === "donkey-kong"){
+          // Tiny Jumpman icon for the Donkey Kong stage.
+          g.save();
+          g.translate(24 + i*12, H-12);
+          g.fillStyle = "#cc2222";  // hat
+          g.fillRect(1, 0, 6, 3);
+          g.fillStyle = "#ffcc88";  // face
+          g.fillRect(2, 3, 4, 3);
+          g.fillStyle = "#3366cc";  // overalls
+          g.fillRect(0, 6, 8, 4);
+          g.restore();
+        } else if(state.gameType === "street-fighter"){
+          // Tiny gi-clad fighter icon for the SF stage.
+          g.save();
+          g.translate(24 + i*12, H-12);
+          g.fillStyle = "#553300";        // hair
+          g.fillRect(2, 0, 5, 2);
+          g.fillStyle = "#ffffff";        // headband
+          g.fillRect(2, 1, 5, 1);
+          g.fillStyle = "#ddc090";        // face
+          g.fillRect(2, 2, 5, 3);
+          g.fillStyle = "#ffffff";        // gi
+          g.fillRect(1, 5, 7, 4);
+          g.fillStyle = "#000";           // belt
+          g.fillRect(1, 8, 7, 1);
           g.restore();
         } else {
           // Tiny vector ship icon for the asteroids stage.
