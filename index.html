@@ -583,6 +583,7 @@ function makeSFFighter(x, facing, name, opts){
 const sf = {
   player: null, ai: null,
   projectiles: [],
+  particles: [],
   roundT: 0,
   endT: 0, winner: null,
   hitstop: 0,
@@ -2628,6 +2629,7 @@ function initSF(){
   sf.player = makeSFFighter(56,    1, "RYU", {skin:"#ddc090", gi:"#ffffff", hair:"#553300"});
   sf.ai     = makeSFFighter(W-70, -1, "KEN", {skin:"#ddc090", gi:"#dd2222", hair:"#ffcc44"});
   sf.projectiles = [];
+  sf.particles = [];
   sf.roundT = 99 * 60;     // 99 seconds at 60Hz
   sf.endT = 0;
   sf.winner = null;
@@ -2809,6 +2811,12 @@ function sfCheckHits(){
       }
       sf.hitstop = 6;
       att.state = "idle"; att.stateT = 0;
+      // Hit spark particles
+      const spkX = hb.x + hb.w/2, spkY = hb.y + hb.h/2;
+      for(let si = 0; si < 9; si++){
+        const ang = Math.random()*Math.PI*2, spd = 1.2 + Math.random()*2.5;
+        sf.particles.push({ x:spkX, y:spkY, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd - 0.8, t:14+Math.floor(Math.random()*10), color:["#ffdd00","#ff8800","#ffffff","#ff4400"][Math.floor(Math.random()*4)] });
+      }
       break;
     }
   }
@@ -2828,6 +2836,11 @@ function sfCheckHits(){
         beep(120, 0.18, "sawtooth", 0.08);
       } else target.blockstun = 18;
       sf.hitstop = 6;
+      // Hadouken hit sparks
+      for(let si = 0; si < 10; si++){
+        const ang = Math.random()*Math.PI*2, spd = 1.5 + Math.random()*3;
+        sf.particles.push({ x:target.x + SF_BODY_W/2, y:target.y - SF_BODY_H/2, vx:Math.cos(ang)*spd, vy:Math.sin(ang)*spd - 1.2, t:16+Math.floor(Math.random()*12), color:["#aaddff","#ffffff","#88bbff","#ffdd88"][Math.floor(Math.random()*4)] });
+      }
       sf.projectiles.splice(i,1);
     }
   }
@@ -2840,7 +2853,7 @@ function sfAITick(){
   const dist = Math.abs(f.x - sf.player.x);
 
   // Block reactively to close attacks.
-  if((sf.player.state === "punch" || sf.player.state === "kick") && dist < 32 && Math.random() < 0.35){
+  if((sf.player.state === "punch" || sf.player.state === "kick") && dist < 32 && Math.random() < 0.52){
     f.state = "block"; f.stateT = 0; f.vx = 0; return;
   }
   // Jump over hadoukens occasionally.
@@ -2860,19 +2873,19 @@ function sfAITick(){
     return;
   }
   // Choose a new action.
-  f.aiTimer = 30 + Math.floor(Math.random() * 50);
+  f.aiTimer = 16 + Math.floor(Math.random() * 28);
   if(dist < 28){
     const r = Math.random();
-    if(r < 0.5){ f.state = "punch"; f.stateT = 0; f.vx = 0; beep(440, 0.04, "square", 0.04); }
-    else if(r < 0.85){ f.state = "kick"; f.stateT = 0; f.vx = 0; beep(280, 0.05, "square", 0.04); }
+    if(r < 0.55){ f.state = "punch"; f.stateT = 0; f.vx = 0; beep(440, 0.04, "square", 0.04); }
+    else if(r < 0.90){ f.state = "kick"; f.stateT = 0; f.vx = 0; beep(280, 0.05, "square", 0.04); }
     else { f.aiAction = "back"; }
-  } else if(dist > 90){
-    if(Math.random() < 0.35 && f.hadoukenCD <= 0){
-      f.state = "hadouken"; f.stateT = 0; f.vx = 0; f.hadoukenCD = 90;
+  } else if(dist > 70){
+    if(Math.random() < 0.48 && f.hadoukenCD <= 0){
+      f.state = "hadouken"; f.stateT = 0; f.vx = 0; f.hadoukenCD = 70;
       beep(180, 0.18, "sawtooth", 0.06);
     } else f.aiAction = "forward";
   } else {
-    f.aiAction = (Math.random() < 0.7) ? "forward" : "back";
+    f.aiAction = (Math.random() < 0.75) ? "forward" : "back";
   }
 }
 
@@ -2905,6 +2918,13 @@ function updateSF(){
     return;
   }
 
+  // Update hit particles
+  for(let i = sf.particles.length - 1; i >= 0; i--){
+    const pt = sf.particles[i];
+    pt.x += pt.vx; pt.y += pt.vy; pt.vy += 0.12;
+    pt.vx *= 0.88; pt.t--;
+    if(pt.t <= 0) sf.particles.splice(i, 1);
+  }
   sfPlayerInput();
   sfAITick();
   sfStepFighter(sf.player);
@@ -2935,171 +2955,328 @@ function drawSFFighter(f){
   const x = Math.round(f.x), y = Math.round(f.y);
   const dir = f.facing;
   const crouch = (f.state === "crouch");
-  const head_y = crouch ? y - 18 : y - 28;
-  const body_y = crouch ? y - 14 : y - 22;
+  const head_y = crouch ? y - 22 : y - 32;
+  const body_y = crouch ? y - 16 : y - 24;
+  const bodyH  = crouch ? 8 : 14;
 
-  // Shadow
+  // Ground shadow ellipse
   g.fillStyle = "rgba(0,0,0,0.4)";
-  g.fillRect(x, y - 1, SF_BODY_W, 2);
+  g.beginPath(); g.ellipse(x + SF_BODY_W/2, y, 11, 3, 0, 0, Math.PI*2); g.fill();
 
-  // Legs
+  // --- LEGS ---
   g.fillStyle = f.giColor;
   if(crouch){
-    g.fillRect(x + 1, y - 8, 5, 8);
-    g.fillRect(x + 8, y - 8, 5, 8);
-  } else if(f.state === "kick" && f.stateT >= 4 && f.stateT <= 16){
-    g.fillRect(x + 5, y - 14, 4, 14);
-    if(dir > 0) g.fillRect(x + SF_BODY_W - 2, y - 12, 14, 4);
-    else        g.fillRect(x - 12, y - 12, 14, 4);
-    g.fillStyle = f.color;
-    if(dir > 0) g.fillRect(x + SF_BODY_W + 12, y - 13, 4, 6);
-    else        g.fillRect(x - 16, y - 13, 4, 6);
+    g.fillRect(x,     y - 12, 6, 12);
+    g.fillRect(x + 8, y - 12, 6, 12);
+  } else if(f.state === "kick" && f.stateT >= 4 && f.stateT <= 18){
+    g.fillRect(x + 4, y - 17, 5, 17);  // planted leg
+    if(dir > 0){ g.fillRect(x + SF_BODY_W - 1, y - 15, 18, 5); }
+    else        { g.fillRect(x - 17, y - 15, 18, 5); }
+    g.fillStyle = "#333";  // shoe
+    if(dir > 0) g.fillRect(x + SF_BODY_W + 16, y - 16, 4, 8);
+    else        g.fillRect(x - 20, y - 16, 4, 8);
     g.fillStyle = f.giColor;
-  } else if(f.state === "jump" || !f.grounded){
-    g.fillRect(x + 2, y - 10, 4, 6);
-    g.fillRect(x + 8, y - 10, 4, 6);
+  } else if(!f.grounded){
+    // Tuck legs in air
+    g.fillRect(x + 1, y - 14, 5, 9);
+    g.fillRect(x + 8, y - 14, 5, 9);
+    g.fillStyle = "#333";
+    g.fillRect(x,     y - 7, 5, 4);
+    g.fillRect(x + 9, y - 7, 5, 4);
+    g.fillStyle = f.giColor;
   } else {
-    g.fillRect(x + 2, y - 14, 4, 14);
-    g.fillRect(x + 8, y - 14, 4, 14);
+    // Walk animation or standing
     if(f.state === "walk"){
-      const w = Math.floor(f.stateT/6) % 2;
-      if(w) g.fillRect(x + 2, y - 4, 4, 4); else g.fillRect(x + 8, y - 4, 4, 4);
+      const w = Math.floor(f.stateT / 5) % 2;
+      if(w){ g.fillRect(x + 1, y - 18, 5, 18); g.fillRect(x + 8, y - 10, 5, 10); }
+      else  { g.fillRect(x + 1, y - 10, 5, 10); g.fillRect(x + 8, y - 18, 5, 18); }
+    } else {
+      g.fillRect(x + 1, y - 17, 5, 17);
+      g.fillRect(x + 8, y - 17, 5, 17);
     }
+    // Shoes
+    g.fillStyle = "#333";
+    g.fillRect(x,     y - 3, 6, 3);
+    g.fillRect(x + 8, y - 3, 6, 3);
+    g.fillStyle = f.giColor;
   }
 
-  // Body / gi
+  // --- BODY / GI ---
   g.fillStyle = f.giColor;
-  g.fillRect(x + 1, body_y, SF_BODY_W - 2, crouch ? 6 : 12);
+  g.fillRect(x, body_y, SF_BODY_W, bodyH);
+  // Gi lapels (open chest V)
+  g.fillStyle = f.color;
+  const lapelX = x + SF_BODY_W/2 - 1;
+  g.fillRect(lapelX, body_y, 2, bodyH - 2);
+  if(dir > 0) g.fillRect(lapelX + 2, body_y + 3, 2, bodyH - 5);
+  else        g.fillRect(lapelX - 2, body_y + 3, 2, bodyH - 5);
   // Belt
   g.fillStyle = "#000";
-  g.fillRect(x + 1, body_y + (crouch ? 4 : 10), SF_BODY_W - 2, 2);
-  // Open chest
-  g.fillStyle = f.color;
-  g.fillRect(x + SF_BODY_W/2 - 1, body_y, 2, crouch ? 4 : 8);
+  g.fillRect(x, body_y + bodyH - 4, SF_BODY_W, 3);
 
-  // Arms
+  // --- ARMS ---
   g.fillStyle = f.giColor;
-  if(f.state === "punch" && f.stateT >= 2 && f.stateT <= 11){
-    if(dir > 0) g.fillRect(x + SF_BODY_W - 1, body_y + 2, 12, 4);
-    else        g.fillRect(x - 11, body_y + 2, 12, 4);
-    g.fillStyle = f.color;
-    if(dir > 0) g.fillRect(x + SF_BODY_W + 11, body_y + 1, 4, 6);
-    else        g.fillRect(x - 14, body_y + 1, 4, 6);
+  if(f.state === "punch" && f.stateT >= 2 && f.stateT <= 12){
+    // Extended punch
+    if(dir > 0){ g.fillRect(x + SF_BODY_W - 1, body_y + 2, 15, 5); }
+    else        { g.fillRect(x - 14, body_y + 2, 15, 5); }
+    g.fillStyle = f.color;  // fist
+    if(dir > 0) g.fillRect(x + SF_BODY_W + 13, body_y + 1, 6, 7);
+    else        g.fillRect(x - 19, body_y + 1, 6, 7);
+    g.fillStyle = f.giColor;
+    // Rear arm retracted
+    if(dir > 0) g.fillRect(x - 2, body_y + 5, 4, 6);
+    else        g.fillRect(x + SF_BODY_W - 2, body_y + 5, 4, 6);
   } else if(f.state === "hadouken"){
     if(f.stateT < 14){
-      // Pulling back
-      if(dir > 0) g.fillRect(x - 4, body_y + 4, 6, 4);
-      else        g.fillRect(x + SF_BODY_W - 2, body_y + 4, 6, 4);
+      // Charging — arms pulled back and cupped
+      if(dir > 0){ g.fillRect(x - 5, body_y + 3, 8, 5); g.fillRect(x + SF_BODY_W - 3, body_y + 7, 5, 5); }
+      else        { g.fillRect(x + SF_BODY_W - 3, body_y + 3, 8, 5); g.fillRect(x - 2, body_y + 7, 5, 5); }
     } else {
-      // Releasing (extended)
-      if(dir > 0) g.fillRect(x + SF_BODY_W - 1, body_y + 2, 14, 6);
-      else        g.fillRect(x - 13, body_y + 2, 14, 6);
+      // Releasing — arms thrust forward
+      if(dir > 0){ g.fillRect(x + SF_BODY_W - 1, body_y + 2, 17, 6); }
+      else        { g.fillRect(x - 16, body_y + 2, 17, 6); }
       g.fillStyle = f.color;
-      if(dir > 0) g.fillRect(x + SF_BODY_W + 13, body_y + 1, 3, 8);
-      else        g.fillRect(x - 16, body_y + 1, 3, 8);
+      if(dir > 0) g.fillRect(x + SF_BODY_W + 15, body_y + 1, 5, 9);
+      else        g.fillRect(x - 20, body_y + 1, 5, 9);
+      g.fillStyle = f.giColor;
     }
   } else if(f.state === "block"){
-    if(dir > 0){
-      g.fillRect(x + SF_BODY_W - 2, body_y + 1, 6, 4);
-      g.fillRect(x + SF_BODY_W - 2, body_y + 6, 6, 4);
-    } else {
-      g.fillRect(x - 4, body_y + 1, 6, 4);
-      g.fillRect(x - 4, body_y + 6, 6, 4);
-    }
+    // Cross-arm guard in front of face
+    if(dir > 0){ g.fillRect(x + SF_BODY_W - 3, body_y - 1, 8, 5); g.fillRect(x + SF_BODY_W - 4, body_y + 5, 8, 5); }
+    else        { g.fillRect(x - 5, body_y - 1, 8, 5); g.fillRect(x - 4, body_y + 5, 8, 5); }
   } else if(f.state === "hit"){
-    g.fillRect(x - 3, body_y - 1, 4, 6);
-    g.fillRect(x + SF_BODY_W - 1, body_y - 1, 4, 6);
+    // Stumble — arms flung back
+    g.fillRect(x - 4, body_y - 2, 5, 7);
+    g.fillRect(x + SF_BODY_W - 1, body_y - 2, 5, 7);
   } else {
-    g.fillRect(x - 1, body_y + 2, 3, 8);
-    g.fillRect(x + SF_BODY_W - 2, body_y + 2, 3, 8);
+    // Idle / walk — arms loosely at sides, swinging when walking
+    if(f.state === "walk"){
+      const sw = Math.floor(f.stateT / 5) % 2;
+      if(sw){ g.fillRect(x - 2, body_y + 3, 3, 7); g.fillRect(x + SF_BODY_W - 1, body_y + 7, 3, 7); }
+      else  { g.fillRect(x - 2, body_y + 7, 3, 7); g.fillRect(x + SF_BODY_W - 1, body_y + 3, 3, 7); }
+    } else {
+      g.fillRect(x - 2, body_y + 3, 3, 9);
+      g.fillRect(x + SF_BODY_W - 1, body_y + 3, 3, 9);
+    }
   }
 
-  // Head
+  // --- HEAD ---
+  const hw = 13, hh = 11, hx = x + (SF_BODY_W - hw) / 2;
   g.fillStyle = f.color;
-  g.fillRect(x + 2, head_y, SF_BODY_W - 4, 8);
+  g.fillRect(hx, head_y, hw, hh);
+  // Jaw/chin definition
+  g.fillStyle = f.color;
+  g.fillRect(hx + 1, head_y + 8, hw - 2, 3);
   // Hair
   g.fillStyle = f.hairColor;
-  g.fillRect(x + 1, head_y - 1, SF_BODY_W - 2, 3);
-  // Headband (white) for the player.
+  g.fillRect(hx - 1, head_y - 3, hw + 2, 5);
+  g.fillRect(hx, head_y, hw, 2);  // hairline
+  // Headband for Ryu (player)
   if(f === sf.player){
-    g.fillStyle = "#ffffff";
-    g.fillRect(x + 1, head_y + 2, SF_BODY_W - 2, 1);
+    g.fillStyle = "#ee2222";
+    g.fillRect(hx, head_y + 2, hw, 2);
+    // Trailing ends
+    g.fillRect(dir > 0 ? hx - 4 : hx + hw, head_y + 1, 4, 3);
   }
-  // Eye facing forward
-  g.fillStyle = "#000";
-  if(dir > 0) g.fillRect(x + SF_BODY_W - 5, head_y + 4, 1, 1);
-  else        g.fillRect(x + 4,             head_y + 4, 1, 1);
-  // Hit grimace
+  // Eye
+  g.fillStyle = "#fff";
+  const eyeX = dir > 0 ? hx + 7 : hx + 3;
+  g.fillRect(eyeX, head_y + 4, 4, 4);
+  g.fillStyle = "#222";
+  g.fillRect(dir > 0 ? eyeX + 2 : eyeX, head_y + 5, 2, 3);
+  // Nose
+  g.fillStyle = "#cc9966";
+  g.fillRect(dir > 0 ? hx + 8 : hx + 3, head_y + 7, 2, 2);
+  // Mouth / expression
+  g.fillStyle = "#553322";
   if(f.state === "hit"){
-    g.fillRect(x + SF_BODY_W/2 - 1, head_y + 6, 2, 1);
+    g.fillRect(hx + 3, head_y + 9, 7, 2);
+    g.fillStyle = "#000";
+    g.fillRect(hx + 4, head_y + 9, 5, 1);
+  } else if(f.state === "hadouken"){
+    g.fillRect(hx + 3, head_y + 9, 7, 2);
+    g.fillStyle = "#000";
+    g.fillRect(hx + 4, head_y + 9, 5, 2);
+  } else {
+    g.fillRect(dir > 0 ? hx + 6 : hx + 3, head_y + 9, 5, 1);
   }
 }
 
 function drawHadouken(p){
-  const phase = Math.floor(p.t / 4) % 2;
-  g.fillStyle = phase ? "#ffffff" : "#aaccff";
-  g.beginPath(); g.arc(p.x, p.y, 6, 0, Math.PI*2); g.fill();
-  g.fillStyle = phase ? "#88ddff" : "#ffffff";
-  g.beginPath(); g.arc(p.x - p.vx*0.5, p.y, 4, 0, Math.PI*2); g.fill();
+  const px = Math.round(p.x), py = Math.round(p.y);
+  // Outer glow ring (pulsing)
+  g.strokeStyle = "rgba(100,180,255,0.35)";
+  g.lineWidth = 3;
+  g.beginPath(); g.arc(px, py, 11 + Math.sin(p.t * 0.4) * 2, 0, Math.PI*2); g.stroke();
+  // Trail
+  g.fillStyle = "rgba(100,180,255,0.25)";
+  g.beginPath(); g.arc(px - p.vx * 2.5, py, 6, 0, Math.PI*2); g.fill();
+  g.fillStyle = "rgba(100,180,255,0.12)";
+  g.beginPath(); g.arc(px - p.vx * 5, py, 4, 0, Math.PI*2); g.fill();
+  // Main orb (colour cycles)
+  const phase = Math.floor(p.t / 3) % 3;
+  g.fillStyle = phase === 0 ? "#4488ff" : phase === 1 ? "#88bbff" : "#aaddff";
+  g.beginPath(); g.arc(px, py, 8, 0, Math.PI*2); g.fill();
+  // Rotating energy spokes
+  g.save();
+  g.translate(px, py);
+  g.rotate(p.t * 0.22 * (p.vx > 0 ? 1 : -1));
+  g.strokeStyle = "rgba(200,230,255,0.8)";
+  g.lineWidth = 1;
+  for(let s = 0; s < 4; s++){
+    g.save(); g.rotate(s * Math.PI / 2);
+    g.beginPath(); g.moveTo(4, 0); g.lineTo(9, 0); g.stroke();
+    g.restore();
+  }
+  g.restore();
+  // Bright core
   g.fillStyle = "#ffffff";
-  g.beginPath(); g.arc(p.x - p.vx*1.0, p.y, 2, 0, Math.PI*2); g.fill();
+  g.beginPath(); g.arc(px, py, 4, 0, Math.PI*2); g.fill();
+  g.fillStyle = "rgba(200,230,255,0.7)";
+  g.beginPath(); g.arc(px - 1, py - 1, 2, 0, Math.PI*2); g.fill();
 }
 
 function drawSFHealthBar(x, y, hp, maxHp, name, rightAlign){
-  g.fillStyle = "#222";
-  g.fillRect(x, y, 80, 6);
+  const W_BAR = 92;
+  // Outer black frame
+  g.fillStyle = "#000";
+  g.fillRect(x - 1, y - 1, W_BAR + 2, 11);
+  // White "empty" ghost showing lost health
+  g.fillStyle = "#555";
+  g.fillRect(x, y, W_BAR, 9);
+  // Current health fill
   const ratio = Math.max(0, hp / maxHp);
-  const w = Math.floor(80 * ratio);
-  let color = "#ffff00";
-  if(ratio < 0.5)  color = "#ff8800";
+  const w = Math.floor(W_BAR * ratio);
+  let color = "#22ee22";
+  if(ratio < 0.5)  color = "#ffcc00";
   if(ratio < 0.25) color = "#ff2222";
   g.fillStyle = color;
-  if(rightAlign) g.fillRect(x + 80 - w, y, w, 6);
-  else           g.fillRect(x,          y, w, 6);
-  g.strokeStyle = "#fff";
+  if(rightAlign) g.fillRect(x + W_BAR - w, y, w, 9);
+  else           g.fillRect(x, y, w, 9);
+  // Highlight stripe on top of health
+  g.fillStyle = "rgba(255,255,255,0.35)";
+  if(rightAlign) g.fillRect(x + W_BAR - w, y, w, 3);
+  else           g.fillRect(x, y, w, 3);
+  // Gold border
+  g.strokeStyle = "#ccaa00";
   g.lineWidth = 1;
-  g.strokeRect(x + 0.5, y + 0.5, 79, 5);
-  drawText(name, rightAlign ? x + 80 - name.length*6 : x, y - 9, C_WHITE);
+  g.strokeRect(x - 0.5, y - 0.5, W_BAR + 1, 10);
+  // Name label
+  drawText(name, rightAlign ? x + W_BAR - name.length * 6 : x, y - 10, "#ffcc44");
 }
 
 function renderSF(){
-  // Background: dusk sky + skyline + earthen floor.
-  g.fillStyle = "#1a1a44"; g.fillRect(0, 0, W, H);
-  g.fillStyle = "#0a0a22";
-  for(let x=0;x<W;x+=8){
-    const h = 8 + ((x*7919) % 28);
-    g.fillRect(x, 80 - h, 6, h);
+  // --- SKY (sunset gradient via stacked bands) ---
+  g.fillStyle = "#100520"; g.fillRect(0,   0, W, 38);
+  g.fillStyle = "#2a0838"; g.fillRect(0,  38, W, 22);
+  g.fillStyle = "#6a1828"; g.fillRect(0,  60, W, 22);
+  g.fillStyle = "#bb4010"; g.fillRect(0,  82, W, 22);
+  g.fillStyle = "#e86818"; g.fillRect(0, 104, W, 18);
+  g.fillStyle = "#ff9930"; g.fillRect(0, 122, W, 10);
+
+  // Setting sun with layered glow
+  const sunX = Math.round(W * 0.76), sunY = 112;
+  g.fillStyle = "#ff6600"; g.beginPath(); g.arc(sunX, sunY, 16, 0, Math.PI*2); g.fill();
+  g.fillStyle = "#ffaa22"; g.beginPath(); g.arc(sunX, sunY, 11, 0, Math.PI*2); g.fill();
+  g.fillStyle = "#ffee66"; g.beginPath(); g.arc(sunX, sunY, 6,  0, Math.PI*2); g.fill();
+
+  // Pagoda silhouettes (3-tier Japanese towers)
+  function drawPagoda(px, py){
+    g.fillStyle = "#080212";
+    g.fillRect(px + 6, py - 16, 2, 16);  // spire
+    [[8,3],[10,3],[14,3]].forEach(([tw,th],ti) => {
+      const ty = py - 12 + ti*4, tx = px + 12 - tw/2;
+      g.fillRect(tx, ty, tw, th);
+    });
+    g.fillRect(px + 3, py, 18, 10);
+    g.fillRect(px,     py + 10, 24, 8);
   }
-  // Distant sun
-  g.fillStyle = "#cc4422";
-  g.beginPath(); g.arc(W*0.7, 70, 10, 0, Math.PI*2); g.fill();
-  // Floor
-  g.fillStyle = "#664422"; g.fillRect(0, SF_FLOOR_Y, W, H - SF_FLOOR_Y);
-  g.fillStyle = "#553311"; for(let x=0;x<W;x+=12) g.fillRect(x, SF_FLOOR_Y, 6, 1);
+  drawPagoda(10,  104);
+  drawPagoda(164,  96);
+  drawPagoda(84,  112);
 
-  // Health bars + timer
-  drawSFHealthBar(8, 30, sf.player.hp, sf.player.maxHp, "RYU", false);
-  drawSFHealthBar(W - 88, 30, sf.ai.hp, sf.ai.maxHp, "KEN", true);
+  // Crowd rows — animated waving spectators
+  const CROWD_C = ["#cc3333","#3366cc","#33cc44","#cccc22","#cc33cc","#33cccc","#ff8833","#ffffff","#884400","#ff44aa"];
+  for(let ci = 0; ci < 26; ci++){
+    const cx = 4 + ci * 8 + (ci % 2) * 2;
+    const cy = SF_FLOOR_Y - 26 - ((ci * 13) % 8);
+    g.fillStyle = CROWD_C[ci % CROWD_C.length];
+    g.fillRect(cx, cy + 4, 6, 8);        // body
+    g.fillStyle = "#ddc090";
+    g.fillRect(cx + 1, cy, 4, 5);        // head
+    const wave = Math.floor((frame + ci * 7) / 18) % 2;
+    g.fillStyle = CROWD_C[ci % CROWD_C.length];
+    if(wave){ g.fillRect(cx - 2, cy + 1, 2, 5); g.fillRect(cx + 6, cy + 5, 2, 4); }
+    else     { g.fillRect(cx - 2, cy + 4, 2, 4); g.fillRect(cx + 6, cy + 1, 2, 5); }
+  }
+
+  // Decorative banner poles
+  const BNRC = ["#cc0000","#0000cc","#cc7700","#008800"];
+  for(let b = 0; b < 4; b++){
+    const bx = 22 + b * 56;
+    g.fillStyle = "#6b3a00"; g.fillRect(bx, SF_FLOOR_Y - 48, 2, 48);
+    g.fillStyle = BNRC[b];   g.fillRect(bx + 2, SF_FLOOR_Y - 48, 11, 15);
+    g.fillStyle = "rgba(0,0,0,0.25)"; g.fillRect(bx + 2, SF_FLOOR_Y - 48, 11, 2);
+  }
+
+  // Wooden floor (planks)
+  g.fillStyle = "#7a4e2d"; g.fillRect(0, SF_FLOOR_Y, W, H - SF_FLOOR_Y);
+  g.fillStyle = "#5d3a20";
+  for(let plx = 0; plx < W; plx += 11) g.fillRect(plx, SF_FLOOR_Y, 1, H - SF_FLOOR_Y);
+  g.fillStyle = "#9b6b3a"; g.fillRect(0, SF_FLOOR_Y,     W, 2);   // highlight
+  g.fillStyle = "#3a2010"; g.fillRect(0, SF_FLOOR_Y + 2, W, 1);   // shadow
+
+  // --- HUD ---
+  drawSFHealthBar(4,  18, sf.player.hp, sf.player.maxHp, "RYU", false);
+  drawSFHealthBar(W - 96, 18, sf.ai.hp, sf.ai.maxHp, "KEN", true);
+  // Timer box
   const sec = Math.max(0, Math.ceil(sf.roundT / 60));
-  drawText(String(sec).padStart(2,"0"), W/2 - 6, 30, sec < 10 ? C_RED : C_WHITE);
+  g.fillStyle = "#000"; g.fillRect(W/2 - 11, 15, 22, 14);
+  g.strokeStyle = "#ccaa00"; g.lineWidth = 1; g.strokeRect(W/2 - 10.5, 15.5, 21, 13);
+  drawText(String(sec).padStart(2,"0"), W/2 - 6, 19, sec < 10 ? C_RED : C_WHITE);
 
-  // Fighters
+  // --- FIGHTERS ---
   drawSFFighter(sf.player);
   drawSFFighter(sf.ai);
 
-  // Projectiles
+  // --- PROJECTILES ---
   for(const p of sf.projectiles) drawHadouken(p);
 
-  // Intro / outro text
+  // --- HIT PARTICLES ---
+  for(const pt of sf.particles){
+    const a = Math.max(0, pt.t / 20);
+    g.globalAlpha = a;
+    g.fillStyle = pt.color;
+    g.fillRect(Math.round(pt.x) - 1, Math.round(pt.y) - 1, 3, 3);
+  }
+  g.globalAlpha = 1;
+
+  // --- INTRO / OUTRO TEXT (native font for impact) ---
   if(sf.intro > 0){
-    const txt = sf.intro > 60 ? "ROUND 1" : "FIGHT!";
-    const blink = Math.floor(frame/8) % 2 === 0;
-    drawText(txt, W/2 - txt.length*3, H/2 - 4, blink ? C_RED : C_WHITE);
+    g.save();
+    g.textAlign = "center"; g.textBaseline = "middle";
+    const itxt  = sf.intro > 60 ? "ROUND 1" : "FIGHT!";
+    const iblink = Math.floor(frame / 6) % 2 === 0;
+    g.fillStyle   = iblink ? "#ff2222" : "#ffaa00";
+    g.shadowColor = g.fillStyle; g.shadowBlur = 10;
+    g.font = "bold 15px monospace";
+    g.fillText(itxt, W / 2, H / 2);
+    g.shadowBlur = 0; g.restore();
   }
   if(sf.winner){
-    const txt = (sf.winner === "player") ? "K.O.!" : "YOU LOSE";
-    drawText(txt, W/2 - txt.length*3, H/2 - 4, C_RED);
-    drawText(sf.winner === "player" ? "WINNER" : "TRY AGAIN", W/2 - 27, H/2 + 6, C_WHITE);
+    g.save();
+    g.textAlign = "center"; g.textBaseline = "middle";
+    const wtxt = sf.winner === "player" ? "K.O.!" : "YOU LOSE";
+    g.fillStyle   = sf.winner === "player" ? "#ffdd00" : "#ff2222";
+    g.shadowColor = g.fillStyle; g.shadowBlur = 12;
+    g.font = "bold 17px monospace";
+    g.fillText(wtxt, W / 2, H / 2 - 8);
+    g.shadowBlur = 0;
+    g.font = "bold 9px monospace";
+    g.fillStyle = "#ffffff";
+    g.fillText(sf.winner === "player" ? "WINNER!" : "TRY AGAIN", W / 2, H / 2 + 8);
+    g.restore();
   }
 }
 
